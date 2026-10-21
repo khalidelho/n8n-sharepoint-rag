@@ -24,7 +24,7 @@
     },
     {
       "parameters": {
-        "url": "https://graph.microsoft.com/v1.0/sites/__SHAREPOINT_SITE_ID__/drive/root/children?$select=id,name,file,folder,lastModifiedDateTime&$top=200",
+        "url": "=https://graph.microsoft.com/v1.0/sites/__SHAREPOINT_SITE_ID__/drive/{{ $json.path }}/children?$select=id,name,file,folder,lastModifiedDateTime,parentReference&$top=200",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "microsoftOAuth2Api",
         "options": {
@@ -116,7 +116,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Tidy each Graph file into the fields the rest of the workflow uses,\n// and URL-decode the name (Graph can return %20 etc. — the episode's merge pitfall).\nfunction decode(name) {\n  try {\n    return decodeURIComponent(name);\n  } catch (e) {\n    return name; // a literal \"%\" in a real file name (e.g. \"50% discount.pdf\") isn't encoding — keep it\n  }\n}\n\nreturn $input.all().map(item => ({\n  json: {\n    file_id: item.json.id,                                        // the real file ID (for download)\n    file_name: decode(item.json.name),                            // the merge key\n    content_hash: item.json.file?.hashes?.quickXorHash ?? null,   // Microsoft's content fingerprint\n    graph_last_modified: item.json.lastModifiedDateTime,\n  },\n}));"
+        "jsCode": "// Tidy each Graph file into the fields the rest of the workflow uses,\n// and URL-decode the name (Graph can return %20 etc. — the episode's merge pitfall).\nfunction decode(name) {\n  try {\n    return decodeURIComponent(name);\n  } catch (e) {\n    return name; // a literal \"%\" in a real file name (e.g. \"50% discount.pdf\") isn't encoding — keep it\n  }\n}\n\n// Files in a subfolder are named \"Folder/File.ext\" (shown in citations; avoids name clashes between folders).\nconst folderOf = item => decode((item.json.parentReference?.path ?? '').split('root:')[1] ?? '').replace(/^\\//, '');\n\nreturn $input.all().map(item => ({\n  json: {\n    file_id: item.json.id,                                        // the real file ID (for download)\n    file_name: (folderOf(item) ? folderOf(item) + '/' : '') + decode(item.json.name),   // the merge key\n    content_hash: item.json.file?.hashes?.quickXorHash ?? null,   // Microsoft's content fingerprint\n    graph_last_modified: item.json.lastModifiedDateTime,\n  },\n}));"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -165,7 +165,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Turn each SharePoint list item into { file_name, last_modified } — root of the library only.\n// The name only exists inside webUrl, URL-encoded (Shared%20Documents/My%20File.pdf).\nfunction decode(s) {\n  try { return decodeURIComponent(s); } catch (e) { return s; }\n}\n\nconst LIBRARY = '/sites/__SITE_PATH__/Shared%20Documents/';\nconst out = [];\n\nfor (const item of $input.all()) {\n  const url = item.json.webUrl ?? '';\n  const i = url.indexOf(LIBRARY);\n  if (i === -1) continue;                      // not in the Documents library\n  const rest = url.slice(i + LIBRARY.length);  // \"2018_Annual%20Report.pdf\"  or  \"Tag/file.pdf\"\n  if (rest.includes('/')) continue;            // inside a subfolder → Branch A doesn't list these either\n  out.push({\n    json: {\n      file_name: decode(rest),                 // \"2018_Annual Report.pdf\" — matches Branch A's file_name\n      last_modified: item.json.lastModifiedDateTime,\n    },\n  });\n}\nreturn out;"
+        "jsCode": "// Turn each SharePoint list item into { file_name, last_modified } — top level + one subfolder level.\n// The name only exists inside webUrl, URL-encoded (Shared%20Documents/My%20File.pdf).\nfunction decode(s) {\n  try { return decodeURIComponent(s); } catch (e) { return s; }\n}\n\nconst LIBRARY = '/sites/__SITE_PATH__/Shared%20Documents/';\nconst out = [];\n\nfor (const item of $input.all()) {\n  const url = item.json.webUrl ?? '';\n  const i = url.indexOf(LIBRARY);\n  if (i === -1) continue;                      // not in the Documents library\n  const rest = url.slice(i + LIBRARY.length);  // \"2018_Annual%20Report.pdf\"  or  \"Tag/file.pdf\"\n  const parts = rest.split('/');\n  if (parts.length > 2) continue;              // deeper than one subfolder → Branch A doesn't list these either\n  if (parts.length === 2 && /^dnu$|do not use/i.test(decode(parts[0]).trim())) continue;   // skipped folder\n  out.push({\n    json: {\n      file_name: decode(rest),                 // \"File.pdf\" or \"Tag/File.pdf\" — matches Branch A's file_name\n      last_modified: item.json.lastModifiedDateTime,\n    },\n  });\n}\nreturn out;"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -418,7 +418,7 @@
     },
     {
       "parameters": {
-        "maxItems": 10
+        "maxItems": 4
       },
       "type": "n8n-nodes-base.limit",
       "typeVersion": 1,
@@ -427,7 +427,7 @@
         1120
       ],
       "id": "be67a01b-ee0a-4f05-a9a7-b3653b61e45e",
-      "name": "Batch: 10 files per run"
+      "name": "Batch: 4 files per run"
     },
     {
       "parameters": {
@@ -462,7 +462,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// The download returns only the file bytes; re-attach the file's details from before the download.\nconst info = $('Batch: 10 files per run').item.json;   // the matching item from before the download\nconst ext = (info.file_name.split('.').pop() || '').toLowerCase();\n\nreturn {\n  json: { ...info, extension: ext },   // file_id, file_name, content_hash, action … + extension\n  binary: $input.item.binary,          // keep the downloaded file\n};"
+        "jsCode": "// The download returns only the file bytes; re-attach the file's details from before the download.\nconst info = $('Batch: 4 files per run').item.json;   // the matching item from before the download\nconst ext = (info.file_name.split('.').pop() || '').toLowerCase();\n\nreturn {\n  json: { ...info, extension: ext },   // file_id, file_name, content_hash, action … + extension\n  binary: $input.item.binary,          // keep the downloaded file\n};"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -551,6 +551,31 @@
               },
               "renameOutput": true,
               "outputKey": "ocr"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "d4f876c6-a92b-43cb-b2f4-db99eb2c0c0c",
+                    "leftValue": "={{ ['zip'].includes($json.extension) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "archive"
             }
           ]
         },
@@ -571,26 +596,29 @@
     {
       "parameters": {
         "operation": "xlsx",
-        "options": {}
+        "options": {
+          "sheetName": "={{ $json.sheet_name }}"
+        }
       },
       "type": "n8n-nodes-base.extractFromFile",
       "typeVersion": 1.1,
       "position": [
-        1840,
+        2560,
         1104
       ],
       "id": "f3043482-dc0f-49a9-a952-9785617eacce",
-      "name": "Read spreadsheet rows"
+      "name": "Read spreadsheet rows",
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Wrap each spreadsheet row with the file it came from (the episode: \"JSON right next to the file ID and file name\").\nconst info = $('Attach file info').item.json;\nreturn {\n  json: {\n    file_id: info.file_id,\n    file_name: info.file_name,\n    last_modified: info.last_modified,\n    content_hash: info.content_hash,\n    row_data: $input.item.json,        // the whole row, exactly as in the sheet\n  },\n};"
+        "jsCode": "// Wrap each spreadsheet row with the file it came from (the episode: \"JSON right next to the file ID and file name\"),\n// plus the tab it came from (_sheet), so the agent can tell tabs apart.\nconst info = $('One item per sheet').item.json;\nreturn {\n  json: {\n    file_id: info.file_id,\n    file_name: info.file_name,\n    last_modified: info.last_modified,\n    content_hash: info.content_hash,\n    row_data: { _sheet: info.sheet_name, ...$input.item.json },   // the whole row, exactly as in the sheet\n  },\n};"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2080,
+        2800,
         1104
       ],
       "id": "9a2b4f77-7a88-4fd3-9631-50afac257e76",
@@ -607,8 +635,8 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.7,
       "position": [
-        2320,
-        1104
+        2080,
+        1312
       ],
       "id": "5cea79bb-12d3-46a4-8d3f-37046b9844fc",
       "name": "Write rows",
@@ -625,8 +653,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2560,
-        1104
+        2320,
+        1312
       ],
       "id": "9f70fb39-26cd-47e6-a80c-83dc6bcf3118",
       "name": "One result per file"
@@ -642,8 +670,8 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.7,
       "position": [
-        2800,
-        1104
+        2560,
+        1312
       ],
       "id": "012c965b-a71a-4fd9-98c1-7fdf7aae2333",
       "name": "Mark spreadsheet processed",
@@ -740,7 +768,7 @@
           "conditions": [
             {
               "id": "1890a6c1-644a-4fcd-8b41-17339c9d8eb8",
-              "leftValue": "={{ !/^old_/i.test($json.file_name) && !/do not use/i.test($json.file_name) }}",
+              "leftValue": "={{ !/(^|\\/)old_/i.test($json.file_name) && !/do not use/i.test($json.file_name) }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
@@ -851,6 +879,30 @@
               },
               "renameOutput": true,
               "outputKey": "failed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ocr_status }}",
+                    "rightValue": "describe",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "879498cb-b305-412b-b1c2-4b9d752b87e6"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "describe"
             }
           ]
         },
@@ -1099,7 +1151,8 @@
       "position": [
         768,
         2032
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -1140,7 +1193,8 @@
       "position": [
         1008,
         2032
-      ]
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -1237,7 +1291,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Put each file back together: parts in page order → one document. All-or-nothing:\n// any part retry → whole file retry; any part failed / missing / no usable text → whole file failed.\nconst byFile = new Map();\nfor (const { json } of $input.all()) {\n  if (!byFile.has(json.file_id)) byFile.set(json.file_id, []);\n  byFile.get(json.file_id).push(json);\n}\n\nconst out = [];\nfor (const parts of byFile.values()) {\n  parts.sort((a, b) => a.part - b.part);\n  const { part, of, part_mime, pages: _p, ocr_status: _s, reason: _r, ...file } = parts[0];\n\n  const allPages = [];\n  for (const p of parts) allPages.push(...(p.pages ?? []));\n  allPages.forEach((pg, i) => { pg.index = i; });            // renumber pages across parts\n\n  const markdown = allPages.map(p => p.markdown ?? '').join('\\n\\n');\n  const imageCount = allPages.reduce((n, p) => n + (p.images?.length ?? 0), 0);\n  const realText = markdown.replace(/!\\[[^\\]]*\\]\\([^)]*\\)/g, '').trim();\n\n  let ocr_status = 'ok', reason = null;\n  const bad = s => parts.find(p => p.ocr_status === s);\n  if (bad('retry'))                      { ocr_status = 'retry';  reason = `part ${bad('retry').part}/${of}: ${bad('retry').reason}`; }\n  else if (bad('failed'))                { ocr_status = 'failed'; reason = `part ${bad('failed').part}/${of}: ${bad('failed').reason}`; }\n  else if (parts.length !== of)          { ocr_status = 'failed'; reason = `only ${parts.length} of ${of} parts came back`; }\n  else if (realText.length < 20 && !imageCount) { ocr_status = 'failed'; reason = 'OCR returned no usable text'; }\n\n  out.push({ json: { ...file, ocr_status, reason, parts: of, page_count: allPages.length,\n                     image_count: imageCount, text_chars: realText.length, markdown, pages: allPages } });\n}\nreturn out;"
+        "jsCode": "// Put each file back together: parts in page order → one document. All-or-nothing:\n// any part retry → whole file retry; any part failed / missing / no usable text → whole file failed.\n// Exception: a part whose OCR result Azure's content filter BLOCKED (content_safety_violation) can never\n// succeed, so keep the rest of the document and put a visible note where those pages were.\nconst byFile = new Map();\nfor (const { json } of $input.all()) {\n  if (!byFile.has(json.file_id)) byFile.set(json.file_id, []);\n  byFile.get(json.file_id).push(json);\n}\n\nconst out = [];\nfor (const parts of byFile.values()) {\n  parts.sort((a, b) => a.part - b.part);\n  const { part, of, part_mime, pages: _p, ocr_status: _s, reason: _r, ...file } = parts[0];\n\n  const isBlocked = p => p.ocr_status === 'failed' && /content_safety_violation/.test(p.reason ?? '');\n  const blocked = parts.filter(isBlocked);\n  const allPages = [];\n  for (const p of parts) {\n    if (isBlocked(p) && blocked.length < parts.length) {\n      allPages.push({ markdown: `*[Pages ${(p.part - 1) * 10 + 1}–${p.part * 10} of ${file.file_name} could not be read: Azure's content filter blocked the OCR result.]*`, images: [] });\n    } else allPages.push(...(p.pages ?? []));\n  }\n  allPages.forEach((pg, i) => { pg.index = i; });            // renumber pages across parts\n\n  const markdown = allPages.map(p => p.markdown ?? '').join('\\n\\n');\n  const imageCount = allPages.reduce((n, p) => n + (p.images?.length ?? 0), 0);\n  const realText = markdown.replace(/!\\[[^\\]]*\\]\\([^)]*\\)/g, '').trim();\n\n  let ocr_status = 'ok', reason = null;\n  const bad = s => parts.find(p => p.ocr_status === s && !(isBlocked(p) && blocked.length < parts.length));\n  if (bad('retry'))                      { ocr_status = 'retry';  reason = `part ${bad('retry').part}/${of}: ${bad('retry').reason}`; }\n  else if (bad('failed'))                { ocr_status = 'failed'; reason = `part ${bad('failed').part}/${of}: ${bad('failed').reason}`; }\n  else if (parts.length !== of)          { ocr_status = 'failed'; reason = `only ${parts.length} of ${of} parts came back`; }\n  else if (realText.length < 20 && !imageCount) {\n    if (String(parts[0].part_mime).startsWith('image/')) { ocr_status = 'describe'; reason = 'photo with no text'; }   // → described by GPT\n    else { ocr_status = 'failed'; reason = 'OCR returned no usable text'; }\n  }\n\n  out.push({ json: { ...file, ocr_status, reason, parts: of, page_count: allPages.length,\n                     image_count: imageCount, text_chars: realText.length, markdown, pages: allPages } });\n}\nreturn out;"
       },
       "id": "04c6e58a-96d6-47ed-9b02-265198fe5644",
       "name": "Join parts per file",
@@ -1719,8 +1773,8 @@
     },
     {
       "parameters": {
-        "content": "# RAG – Ingestion\nKeeps the knowledge base in step with the SharePoint library. Every 15 minutes it compares SharePoint with what is already stored, then processes up to 10 new or changed files.\n\n**Documents:** OCR → images → sections → vectors\n**Spreadsheets:** rows into a SQL table\n**Deleted files:** forgotten everywhere\n\n**Writes to:** Supabase tables `documents`, `document_rows`, `document_metadata`, `ingestion_log` + the image bucket.\n**How to watch it:** the `ingestion_log` table and the 8 AM Telegram message. Successful runs are not kept in n8n's Executions list (only failures are).",
-        "height": 360,
+        "content": "# RAG – Ingestion\nKeeps the knowledge base in step with the SharePoint library. Every 15 minutes it compares SharePoint with what is already stored, then processes up to 4 new or changed files (small batches keep each run light; a run is skipped while the previous one is still going).\n\n**Documents:** OCR → images → sections → vectors\n**Spreadsheets:** rows into a SQL table\n**Deleted files:** forgotten everywhere\n\n**Writes to:** Supabase tables `documents`, `document_rows`, `document_metadata`, `ingestion_log` + the image bucket.\n**How to watch it:** the `ingestion_log` table and the 8 AM Telegram message. Successful runs are not kept in n8n's Executions list (only failures are).\n\nTime limit: 30 min per run (workflow settings). Rarely an OCR request is lost and the run would wait forever; the limit cancels it and the files are retried. (For a big backlog: run every 2 min — the overlap guard makes that safe.)",
+        "height": 420,
         "width": 520,
         "color": 7
       },
@@ -1751,8 +1805,8 @@
     },
     {
       "parameters": {
-        "content": "## ② What's in SharePoint right now\nTwo views of the same folder, joined by file name (the episode's dual-path design):\n- **Graph** → each file's permanent ID + content fingerprint\n- **SharePoint node** → last-modified time\n\nNames are URL-decoded (%20 → space) so both sides match. `OLD_` and \"Do Not Use\" files are dropped here, so they count as absent — and are forgotten if they were indexed before.",
-        "height": 593,
+        "content": "## ② What's in SharePoint right now\nTwo views of the same folder, joined by file name (the episode's dual-path design):\n- **Graph** → each file's permanent ID + content fingerprint\n- **SharePoint node** → last-modified time\n\nNames are URL-decoded (%20 → space) so both sides match. `OLD_` and \"Do Not Use\" files are dropped here, so they count as absent — and are forgotten if they were indexed before.\n\nReads the top level **and every subfolder** (one level; folders named DNU / \"Do Not Use\" are skipped). Files in a folder are named `Folder/File.ext`.",
+        "height": 760,
         "width": 1480,
         "color": 5
       },
@@ -1783,7 +1837,7 @@
     },
     {
       "parameters": {
-        "content": "## ④ Pick a batch & download\nTakes up to 10 files per run (a backlog clears over several runs).\n\nFor each file: clear any old passages, rows and images first (so reprocessing never creates duplicates) → download it from Graph by its file ID → route by type: **spreadsheet** · **text** · **document / image** · **unsupported** (logged and skipped, e.g. .mp4, .zip).",
+        "content": "## ④ Pick a batch & download\nTakes up to 4 files per run (a backlog clears over several runs). Was 10 — a batch of 8 large PDFs (51 OCR parts) froze a run.\n\nFor each file: clear any old passages, rows and images first (so reprocessing never creates duplicates) → download it from Graph by its file ID → route by type: **spreadsheet** · **text** · **document / image** · **unsupported** (logged and skipped, e.g. .mp4, .dgn).",
         "height": 571,
         "width": 1720,
         "color": 5
@@ -1799,8 +1853,8 @@
     },
     {
       "parameters": {
-        "content": "## ⑤ Spreadsheets → SQL table\nExcel/CSV rows are stored as they are (one JSON record per row) in `document_rows` — not cut up or embedded.\n\nThat lets the agent answer number questions with SQL instead of doing arithmetic itself. Empty sheets are recorded as `empty` so they aren't retried.",
-        "height": 359,
+        "content": "## ⑤ Spreadsheets → SQL table\nExcel rows from **every tab** are stored as they are (one JSON record per row, tab name in `_sheet`) in `document_rows` — not cut up or embedded. The workbook is unzipped only to read its list of tabs.\n\nThat lets the agent answer number questions with SQL instead of doing arithmetic itself. Empty sheets are recorded as `empty` so they aren't retried.\n\n**Zip archives** (bottom row): unzipped; rainfall distribution tables (.tbl) inside become rows too — tab = table file name, columns Distribution, Time (hr) and Cumulative fraction.",
+        "height": 680,
         "width": 1240,
         "color": 4
       },
@@ -1815,8 +1869,8 @@
     },
     {
       "parameters": {
-        "content": "## ⑥ Prepare documents for OCR\nAzure's OCR takes at most 30 pages / 30 MB per request.\n\n**Gotenberg** (a document-conversion container) converts Word and PowerPoint to PDF (images at 150 dpi — smaller and reads better) and splits every PDF into **10-page parts**. Images go through as one part. Upload names are made safe — an apostrophe in a file name once broke conversion.",
-        "height": 571,
+        "content": "## ⑥ Prepare documents for OCR\nAzure's OCR takes at most 30 pages / 30 MB per request.\n\n**Gotenberg** (a document-conversion container) converts Word and PowerPoint to PDF (images at 150 dpi — smaller and reads better) and splits every PDF into **10-page parts**. Images go through as one part. Upload names are made safe — an apostrophe in a file name once broke conversion.\n\nIf Gotenberg can't convert or split a file, the original goes to OCR whole (Mistral reads PDF/DOCX/PPTX up to 30 pages) instead of failing.",
+        "height": 640,
         "width": 1960
       },
       "id": "447e73c3-9cc5-430b-80ac-1d0700fa5eae",
@@ -1830,8 +1884,8 @@
     },
     {
       "parameters": {
-        "content": "## ⑦ Read the pages — Mistral OCR on Azure (US)\nEach part goes to Mistral Document AI, paced one every 7 seconds (limit: 10 a minute). It returns the text as markdown plus a **description of every image**.\n\nParts are checked and joined back into one document in page order. All-or-nothing: a temporary error → **retry** next run; a broken file → **failed** and skipped until someone edits it.",
-        "height": 761,
+        "content": "## ⑦ Read the pages — Mistral OCR on Azure (US)\nEach part goes to Mistral Document AI, paced one every 7 seconds (limit: 10 a minute). It returns the text as markdown plus a **description of every image**.\n\nParts are checked and joined back into one document in page order. All-or-nothing: a temporary error → **retry** next run; a broken file → **failed** and skipped until someone edits it.\n\n**Photos with no text** (OCR finds nothing) are described by gpt-5.4-mini instead (bottom row), then go through the normal path — so they're still searchable.",
+        "height": 786,
         "width": 1240,
         "color": 4
       },
@@ -1875,6 +1929,241 @@
         1552,
         2560
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gotenberg couldn't convert or split this file — e.g. Outlook \"Save as PDF\" files carry a non-standard\n// PageLayout entry that Gotenberg's PDF library rejects outright. Mistral OCR reads PDF, DOCX and PPTX\n// directly (up to 30 pages / 30 MB), so send the ORIGINAL file as a single part instead of giving up.\n// If it's too big for that, OCR rejects it and the file is marked failed with that reason.\nconst MIME = {\n  pdf: 'application/pdf',\n  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',\n  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',\n  doc: 'application/msword',\n};\nconst out = [];\n$input.all().forEach((item, i) => {\n  let src;\n  try { src = $('Safe file name').itemMatching(i); } catch (e) { return; }   // can't trace the file → retried next run\n  const info = src.json;\n  out.push({\n    json: { ...info, part: 1, of: 1, part_mime: MIME[info.extension] ?? 'application/pdf' },\n    binary: { data: src.binary.data },\n    pairedItem: { item: i },\n  });\n});\nreturn out;"
+      },
+      "id": "0b53cc75-83ed-4b3e-b14d-b0f9032e2ac8",
+      "name": "Send whole file instead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1128,
+        2252
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Excel files are zip archives. n8n's unzip step only accepts files labelled .zip, so hand it a\n// relabelled copy; the original stays in `data` for reading the rows.\nreturn $input.all().map((item, i) => ({\n  json: item.json,\n  binary: {\n    data: item.binary.data,\n    workbook_zip: { ...item.binary.data, fileName: 'workbook.zip', fileExtension: 'zip', mimeType: 'application/zip' },\n  },\n  pairedItem: { item: i },\n}));"
+      },
+      "id": "a23a1724-4665-4b4b-b951-74bbe5e8d2f3",
+      "name": "Prepare workbook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        1104
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "decompress",
+        "binaryPropertyName": "workbook_zip",
+        "outputPrefix": "part_"
+      },
+      "id": "e9e595c5-f9da-4b02-9bd7-0906d66ee8c5",
+      "name": "Unzip workbook",
+      "type": "n8n-nodes-base.compression",
+      "typeVersion": 1.1,
+      "position": [
+        2080,
+        1104
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Every tab, not just the first: read the tab names from the workbook's table of contents\n// (xl/workbook.xml) and emit one item per tab, carrying the original file so the next step reads that tab.\nconst decode = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '\"').replace(/&apos;/g, \"'\").replace(/&amp;/g, '&');\nconst items = $input.all();\nconst out = [];\nfor (let i = 0; i < items.length; i++) {\n  const src = $('Prepare workbook').itemMatching(i);\n  const bin = items[i].binary ?? {};\n  const key = Object.keys(bin).find(k => /(^|\\/)workbook\\.xml$/i.test(bin[k].fileName ?? ''));\n  let names = [];\n  if (key) {\n    const xml = (await this.helpers.getBinaryDataBuffer(i, key)).toString('utf8');\n    names = [...xml.matchAll(/<(?:\\w+:)?sheet\\b[^>]*?\\bname=\"([^\"]*)\"/g)].map(m => decode(m[1]));\n  }\n  if (!names.length) names = [''];   // tab list unreadable → read the first tab, as before\n  for (const sheet_name of names) {\n    out.push({ json: { ...src.json, sheet_name, sheet_count: names.length }, binary: { data: src.binary.data }, pairedItem: { item: i } });\n  }\n}\nreturn out;"
+      },
+      "id": "96487084-c239-4796-8c1d-0b1ebf6b4540",
+      "name": "One item per sheet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        1104
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// A photo with no text in it (OCR found nothing). Pick up the original image again so GPT can look at it.\nconst originals = new Map($('Image: one part').all().map(it => [it.json.file_id, it]));\nconst out = [];\n$input.all().forEach((item, i) => {\n  const src = originals.get(item.json.file_id);\n  if (!src?.binary?.data) return;                     // not found → file stays unmarked and is retried next run\n  out.push({ json: item.json, binary: { data: src.binary.data }, pairedItem: { item: i } });\n});\nreturn out;"
+      },
+      "id": "cb4bc414-940f-45a2-8733-a5030a28de24",
+      "name": "Photo: attach image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ask gpt-5.4-mini (vision) for a factual description, so the photo can be found by search.\nconst out = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const f = items[i].json;\n  const b64 = (await this.helpers.getBinaryDataBuffer(i, 'data')).toString('base64');\n  const mime = f.extension === 'png' ? 'image/png' : 'image/jpeg';\n  out.push({ json: { ...f, body: {\n    model: 'gpt-5.4-mini', reasoning_effort: 'low', max_completion_tokens: 400,\n    messages: [\n      { role: 'system', content: 'You describe images from a company document library so they can be found by search. Be factual and specific: what is shown, activity, equipment, setting, any visible text. 2-4 sentences. Do not guess who people are.' },\n      { role: 'user', content: [\n        { type: 'text', text: `Describe this image (file name: ${f.file_name}).` },\n        { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}` } } ] },\n    ] } }, pairedItem: { item: i } });\n}\nreturn out;"
+      },
+      "id": "8fdb2a78-ce3b-46a8-94f9-9c30a56ac1e7",
+      "name": "Photo: build request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://__AZURE_AI_HOST__/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "azureOpenAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "d58a0447-8789-419d-809c-f9fd91b387d1",
+      "name": "Describe photo (GPT)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2560,
+        2320
+      ],
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn GPT's description into the file's text, then send it back through \"Route OCR result\":\n// ok → linked, chunked and embedded like any other file; failed → marked failed with the reason.\nreturn $input.all().map((item, i) => {\n  const { body, ...f } = $('Photo: build request').itemMatching(i).json;\n  const desc = String(item.json.choices?.[0]?.message?.content ?? '').trim();\n  if (desc.length < 20) {\n    const err = item.json.error?.message ?? item.json.error ?? 'empty description';\n    return { json: { ...f, ocr_status: 'failed', reason: `photo with no text; description failed: ${String(err).slice(0, 150)}` }, pairedItem: { item: i } };\n  }\n  const markdown = `*Photo (${f.file_name}): ${desc}*`;\n  return { json: { ...f, ocr_status: 'ok', reason: null, page_count: 1, image_count: 0, text_chars: desc.length,\n                   markdown, pages: [{ index: 0, markdown, images: [] }] }, pairedItem: { item: i } };\n});"
+      },
+      "id": "4b90796f-b427-43e6-903d-4a6cd5126405",
+      "name": "Photo: use description",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://graph.microsoft.com/v1.0/sites/__SHAREPOINT_SITE_ID__/drive/root/children?$select=id,name,folder&$top=200",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftOAuth2Api",
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "responseContainsNextURL",
+              "nextURL": "={{ $response.body[\"@odata.nextLink\"] }}",
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body[\"@odata.nextLink\"] }}"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1488,
+        560
+      ],
+      "id": "8347f4c4-1dca-42dc-8335-e8860798281c",
+      "name": "Graph – list subfolders",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "microsoftOAuth2Api": {
+          "name": "Microsoft Graph – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// The library's top level plus every subfolder, except \"DNU\" / \"Do Not Use\" folders (skipped on purpose).\n// One level deep: files in a sub-subfolder are not read.\nconst folders = [''];\nfor (const page of $input.all())\n  for (const f of page.json.value ?? [])\n    if (f.folder && !/^dnu$|do not use/i.test(f.name.trim())) folders.push(f.name);\nreturn folders.map(folder => ({ json: { folder, path: folder ? `root:/${encodeURIComponent(folder)}:` : 'root' } }));"
+      },
+      "id": "6acc4d70-3522-4424-aec3-a1c333a99359",
+      "name": "Folders to read",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n's unzip step decides by the file's extension label, so make sure a zip is labelled as one.\nreturn $input.all().map((item, i) => ({\n  json: item.json,\n  binary: { data: { ...item.binary.data, fileName: 'archive.zip', fileExtension: 'zip', mimeType: 'application/zip' } },\n  pairedItem: { item: i },\n}));"
+      },
+      "id": "8e7219a5-742a-4bd6-9bc1-00ae3de59f6d",
+      "name": "Prepare archive",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "decompress",
+        "binaryPropertyName": "data",
+        "outputPrefix": "part_"
+      },
+      "id": "4c1d9565-97d2-44e0-be60-3fc96cf53840",
+      "name": "Unzip archive",
+      "type": "n8n-nodes-base.compression",
+      "typeVersion": 1.1,
+      "position": [
+        2080,
+        1500
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Unzipped archive → table rows. Reads rainfall distribution tables (.tbl, NRCS WinTR rainfall-table format: a header\n// line \"NAME  increment\", then cumulative fractions, 5 per line, from time 0). Each table becomes rows\n// { _sheet: <file name>, Distribution: NAME, \"Time (hr)\", \"Cumulative fraction\" } in document_rows, so the agent\n// can query them with SQL. (The tab is the file name: different files can carry the same internal NAME.)\n// Anything else inside an archive is not read; an archive with nothing readable is marked skipped.\nconst out = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  let f;\n  try { f = $('Attach file info').itemMatching(i).json; } catch (e) { continue; }   // can't trace → retried next run\n  const rows = []; let tables = 0;\n  for (const [key, bin] of Object.entries(items[i].binary ?? {})) {\n    if (!/\\.tbl$/i.test(bin.fileName ?? '')) continue;\n    const lines = (await this.helpers.getBinaryDataBuffer(i, key)).toString('latin1').split(/\\r?\\n/).filter(l => l.trim());\n    if (!lines.length) continue;\n    const head = lines[0].trim().split(/\\s+/);\n    const inc = Number(head[head.length - 1]);\n    const named = head.length > 1 && !isNaN(inc);\n    const tab = String(bin.fileName).split('/').pop().replace(/\\.tbl$/i, '');\n    const name = named ? head.slice(0, -1).join(' ') : tab;\n    const step = named && inc > 0 ? inc : 0.1;\n    const values = lines.slice(named ? 1 : 0).join(' ').trim().split(/\\s+/).map(Number).filter(v => !isNaN(v));\n    if (!values.length) continue;\n    tables++;\n    values.forEach((v, k) => rows.push({ _sheet: tab, Distribution: name, 'Time (hr)': Math.round(k * step * 1000) / 1000, 'Cumulative fraction': v }));\n  }\n  out.push({ json: { file_id: f.file_id, file_name: f.file_name, last_modified: f.last_modified, content_hash: f.content_hash,\n                     rows, message: tables ? `${tables} rainfall distribution tables (.tbl) → ${rows.length} rows` : 'archive: nothing readable inside' },\n             pairedItem: { item: i } });\n}\nreturn out;"
+      },
+      "id": "3936b053-774a-412e-90db-0a5394eda085",
+      "name": "Rainfall tables → rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with ins as (\n  insert into document_rows (file_id, file_name, row_data)\n  select $1, $2, r from jsonb_array_elements($5::jsonb) r\n  returning 1\n), log as (\n  insert into ingestion_log (file_id, file_name, step, status, chunk_count, message)\n  select $1, $2, 'rows_write', case when count(*) = 0 then 'skipped' else 'ok' end, count(*), $6 from ins\n)\ninsert into document_metadata (file_id, file_name, last_modified, content_hash)\nvalues ($1, $2, $3::timestamptz, $4)\non conflict (file_id) do update\n  set file_name = excluded.file_name, last_modified = excluded.last_modified,\n      content_hash = excluded.content_hash, updated_at = now();",
+        "options": {
+          "queryReplacement": "={{ [$json.file_id, $json.file_name, $json.last_modified, $json.content_hash, JSON.stringify($json.rows), $json.message] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        2560,
+        1500
+      ],
+      "id": "83b51fc4-3fa3-423b-baa5-e5197acbc5bc",
+      "name": "Store tables & mark archive",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
     }
   ],
   "connections": {
@@ -2003,14 +2292,14 @@
       "main": [
         [
           {
-            "node": "Batch: 10 files per run",
+            "node": "Batch: 4 files per run",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Batch: 10 files per run",
+            "node": "Batch: 4 files per run",
             "type": "main",
             "index": 0
           }
@@ -2057,7 +2346,7 @@
       "main": [
         [
           {
-            "node": "Read spreadsheet rows",
+            "node": "Prepare workbook",
             "type": "main",
             "index": 0
           }
@@ -2072,6 +2361,13 @@
         [
           {
             "node": "Image or document?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare archive",
             "type": "main",
             "index": 0
           }
@@ -2195,6 +2491,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Photo: attach image",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -2239,6 +2542,13 @@
         [
           {
             "node": "Gotenberg: split every 10 pages",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send whole file instead",
             "type": "main",
             "index": 0
           }
@@ -2532,22 +2842,18 @@
         ]
       ]
     },
-    "Batch: 10 files per run": {
-      "main": [
-        [
-          {
-            "node": "Clear old chunks & rows",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Gotenberg: split every 10 pages": {
       "main": [
         [
           {
             "node": "Zip or single PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send whole file instead",
             "type": "main",
             "index": 0
           }
@@ -2569,12 +2875,180 @@
       "main": [
         [
           {
-            "node": "Graph – list folder",
+            "node": "Graph – list subfolders",
             "type": "main",
             "index": 0
           },
           {
             "node": "SharePoint – get timestamps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare workbook": {
+      "main": [
+        [
+          {
+            "node": "Unzip workbook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unzip workbook": {
+      "main": [
+        [
+          {
+            "node": "One item per sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "One item per sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per sheet": {
+      "main": [
+        [
+          {
+            "node": "Read spreadsheet rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send whole file instead": {
+      "main": [
+        [
+          {
+            "node": "Build OCR request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch: 4 files per run": {
+      "main": [
+        [
+          {
+            "node": "Clear old chunks & rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Photo: attach image": {
+      "main": [
+        [
+          {
+            "node": "Photo: build request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Photo: build request": {
+      "main": [
+        [
+          {
+            "node": "Describe photo (GPT)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Describe photo (GPT)": {
+      "main": [
+        [
+          {
+            "node": "Photo: use description",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Photo: use description": {
+      "main": [
+        [
+          {
+            "node": "Route OCR result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Graph – list subfolders": {
+      "main": [
+        [
+          {
+            "node": "Folders to read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Folders to read": {
+      "main": [
+        [
+          {
+            "node": "Graph – list folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare archive": {
+      "main": [
+        [
+          {
+            "node": "Unzip archive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unzip archive": {
+      "main": [
+        [
+          {
+            "node": "Rainfall tables → rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rainfall tables → rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rainfall tables → rows": {
+      "main": [
+        [
+          {
+            "node": "Store tables & mark archive",
             "type": "main",
             "index": 0
           }
@@ -2588,7 +3062,8 @@
     "saveDataSuccessExecution": "none",
     "saveDataErrorExecution": "all",
     "saveManualExecutions": true,
-    "saveExecutionProgress": false
+    "saveExecutionProgress": false,
+    "executionTimeout": 1800
   },
   "active": false
 }

@@ -71,12 +71,20 @@ cp workflows.env.example workflows.env && $EDITOR workflows.env
 python3 scripts/configure_workflows.py          # writes build/workflows/*.json with your values
 ```
 
-Import them (n8n → Workflows → Import from file) in this order: `search-reranked`, `chat-agent`,
+Import them (n8n → Workflows → Import from file) in this order: `search-reranked`, `web-search-allow-listed`, `chat-agent`,
 `ingestion`, `daily-health`. Open each one, check every node shows its credential, and **publish** it.
-The search workflow must be published before the agent can call it.
+The search and web-search workflows must be published before the agent can call them.
 
 If you import with the CLI instead (`n8n import:workflow`), imports arrive unpublished: run
 `n8n publish:workflow --id=<id>` for each and restart the n8n containers.
+
+## 6b. Web search (optional — to skip it, delete the `search_web` node from the chat agent)
+
+`RAG – Web search (allow-listed)` calls the Azure OpenAI Responses API (`/openai/v1/responses`) with the
+`web_search` tool, using the same **Azure AI – RAG** credential. Edit `ALLOWED_DOMAINS` in its *Build web search
+request* node (max 20 domains): add your state environmental agency, your state's regulations site and your
+local public-works site to the federal defaults. Only a short model-written search query leaves Azure; the agent
+is instructed never to put document text, file names, project names or people in a query. Note: `web_search_preview` does not accept domain filters — use `web_search`.
 
 ## 7. Open WebUI pipe
 
