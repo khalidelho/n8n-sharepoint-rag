@@ -49,6 +49,50 @@ tutorials and only show up with real documents.
   in the compare step, so nothing matched and processed files were treated as deleted. Check table counts
   before and after every change; a spike in "deleted" is an alarm.
 
+## Running a large backlog unattended
+
+- **One unusual file can stall everything.** Outlook's "Save as PDF" writes a non-standard catalog entry
+  (`/PageLayout /PDLayoutDontCare`) that Gotenberg's PDF engine rejects outright. The split node threw, a failed
+  run marks nothing, so every run retried the same batch. Fix: give the Gotenberg nodes an error output and send
+  such files to OCR whole — Mistral reads PDF/DOCX/PPTX directly up to 30 pages.
+- **The spreadsheet extractor reads only the first tab.** Workbooks with 9–14 tabs lost most of their rows (one
+  stored nothing because its first tab was blank). Fix without extra libraries: an .xlsx is a zip — unzip a copy
+  with the Compression node, read the tab names from `xl/workbook.xml`, emit one item per tab, and pass the tab
+  name to the extractor. Store the tab name with each row so the agent can filter by it.
+- **A run can freeze with no error.** The HTTP node fires batched requests on a timer without waiting for
+  responses; with dozens of large OCR requests in flight, occasionally one never settled. Diagnose with
+  `N8N_LOG_LEVEL=debug` (per-node start/finish lines) and the worker's open sockets. Fix: smaller batches run
+  more often (the overlap guard makes short intervals safe) plus a workflow time limit, so a frozen run cancels
+  itself and its files are retried.
+- **A time limit can create its own loop.** Files that genuinely need longer than the limit are cancelled and
+  retried forever, blocking everything behind them. Defer the giants, clear the backlog, then run each alone.
+- **Photos without text fail OCR.** The OCR model's document annotation summarizes the text it read; it doesn't
+  look at the picture. Send text-free images to a vision model for a short factual description instead.
+- **Content filters can block part of a document permanently.** Keep the readable parts and put a visible note
+  where the blocked pages were, rather than failing the whole file forever.
+- **Measure completeness against the source.** List the library through Graph and check that every eligible file
+  has a status — "the pipeline stopped complaining" is not the same as "everything is in".
+
+## Web search next to private documents
+
+- **Keep the two kinds of source visibly apart.** Answers that used the web carry two sections, "From your
+  documents" and "From the web — verify before relying", never mixed in one sentence. When they disagree the
+  answer says so; the documents stay the organization's standard.
+- **Restrict the web to an allow-list.** On Azure, the `web_search_preview` tool rejects domain filters; the
+  `web_search` tool accepts `filters.allowed_domains` and only cites those sites.
+- **Use the web only when needed.** The agent searches the web for *current* regulations, changes or best
+  practices, or when the documents don't answer — not for questions the documents already settle.
+- **A review mode is mostly instructions.** Read the template in full, search related internal standards,
+  check current regulations, then return a fixed structure (covered / add / outdated / suggested wording) where
+  every recommendation names its source. No new infrastructure needed.
+
+## Evaluating alternatives
+
+- **"Completed" is not the same as "readable".** One pipeline marked image-only PDFs as completed with zero text
+  extracted — no error. Count the text extracted per file, not just the job status.
+- **Hold the search engine constant.** Comparing pipelines on the same engine and embedding model (same
+  questions, known source file per question) isolates what actually differs: how documents are read and split.
+
 ## Sync design
 
 - **Write metadata last.** If a run dies midway, the file is simply redone; it's never "marked done but

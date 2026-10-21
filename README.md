@@ -9,9 +9,14 @@ source cited and, for how-to questions, the relevant screenshots from the docume
 - **Keeps itself in sync:** every 15 minutes it compares SharePoint with what it has indexed and
   processes only what's new, changed, renamed or deleted.
 - **Reads everything:** PDFs, Word, PowerPoint (incl. scanned pages, via OCR), images inside documents
-  (described by the OCR model so screenshots are searchable), and spreadsheets (queried with SQL, not
-  guessed from text).
-- **Built for operations:** queue-mode n8n, overlap guard, per-file retry, a daily health message,
+  (described by the OCR model so screenshots are searchable), photos with no text (described by a vision
+  model), and spreadsheets (every tab of .xlsx/.xlsm) queried with SQL, not guessed from text.
+- **Knows what's current:** when the documents don't cover it (current regulations, recent changes, best
+  practices), it searches an **allow-list of authoritative public sites** and keeps those findings in a separate
+  **"From the web"** section, never mixed with **"From your documents"**. A **review mode** turns this into a gap
+  report for any template, standard or checklist: what's covered, what to add, what may be outdated, with sources.
+- **Built for operations:** queue-mode n8n, overlap guard, per-file retry, a run time limit that cancels a
+  frozen run, fallbacks for files the converter rejects, a daily health message,
   90-day retention, a one-command right-to-erasure script, and usage counts that never store questions.
 
 Based on the blueprint from the M365.FM podcast episode *"Building Private RAG: A Blueprint for SharePoint
@@ -28,6 +33,7 @@ flowchart LR
         AGT[Chat agent<br/>+ memory]
         SRCH[Search<br/>vector → rerank]
         HLT[Daily health]
+        WS[Web search<br/>allow-listed]
     end
 
     subgraph AZ["Azure AI Foundry (US data zone)"]
@@ -59,23 +65,25 @@ flowchart LR
     AGT -- read-only SQL --> PG
     HLT --> PG
     HLT --> TG
+    AGT --> WS
+    WS -- Responses API web_search --> PUB[(Authoritative<br/>public sites)]
 ```
 
 ### Ingestion (the `RAG – Ingestion` workflow)
 
 | Step | What happens |
 |---|---|
-| ① Start & safety check | Runs every 15 min; skips if another run is still going (asks n8n's own DB). |
-| ② What's in SharePoint now | Lists the library through Microsoft Graph, following `@odata.nextLink` pages. |
+| ① Start & safety check | Runs every 15 min (set it to every 2 min by hand to clear a big backlog), 4 files per run; skips if another run is still going (asks n8n's own DB); 30-min time limit. |
+| ② What's in SharePoint now | Lists the library through Microsoft Graph — the top level and every subfolder one level deep (folders named DNU / "Do Not Use" are skipped) — following `@odata.nextLink` pages. Files in a folder are named `Folder/File`. |
 | ③ What changed | Compares against `document_metadata` using Graph's `quickXorHash` content fingerprint → new / updated / renamed-only / deleted / unchanged. Outdated files (`OLD_…`, "Do Not Use") count as absent. |
-| ④ Batch & download | Takes 10 files, clears any half-finished data for them first (every run is idempotent). |
-| ⑤ Spreadsheets → SQL | Excel/CSV rows go into `document_rows` as JSON, so the agent can count and filter exactly. |
-| ⑥ Prepare for OCR | Gotenberg converts Office files to PDF and splits long PDFs into 10-page parts. |
-| ⑦ Read the pages | Mistral Document AI returns Markdown per page plus a description of every image. |
+| ④ Batch & download | Takes 4 files, clears any half-finished data for them first (every run is idempotent). |
+| ⑤ Spreadsheets → SQL | Rows from **every tab** (.xlsx/.xlsm; legacy .xls/.csv fall back to the first) go into `document_rows` as JSON (tab name in `_sheet`), so the agent can count and filter exactly. Zip archives of `.tbl` data tables are unzipped into rows the same way. |
+| ⑥ Prepare for OCR | Gotenberg converts Office files to PDF and splits long PDFs into 10-page parts; a file it rejects goes to OCR whole. |
+| ⑦ Read the pages | Mistral Document AI returns Markdown per page plus a description of every image. Photos with no text are described by gpt-5.4-mini instead. |
 | ⑧ Images → Storage | Images are uploaded to Supabase Storage; links in the text point at them. |
 | ⑨ Cut, embed, store | GPT proposes chunk boundaries over numbered paragraphs ("agentic chunking"); code validates and repairs the plan, merges tiny chunks, caps size. Chunks are embedded (1536-d) into pgvector. File metadata is written **last**, so a crash means "redo", never "half-indexed but marked done". |
 
-### Answering (the `RAG – Chat agent` and `RAG – Search (reranked)` workflows)
+### Answering (the `RAG – Chat agent`, `RAG – Search (reranked)` and `RAG – Web search (allow-listed)` workflows)
 
 1. Open WebUI's **Knowledge Assistant** pipe forwards the newest message to an n8n webhook with a bearer
    token, labelling the memory session `<user-id>:<chat-id>`.
@@ -86,8 +94,18 @@ flowchart LR
      duplicate copies of a deck stop crowding out the passage that actually answers the question.
    - `get_full_document` — every chunk of one file, in order, when a passage isn't enough.
    - `query_spreadsheets` — SQL over `document_rows`, through a **read-only** Postgres login
-     with a 15-second timeout.
-4. The answer comes back with citations and inline screenshots.
+     with a 15-second timeout. The agent is told how form-style engineering sheets hide their headings in the
+     first rows and how to skip blank template rows.
+   - `search_web` — one call to the Azure OpenAI Responses API with its `web_search` tool, restricted to an
+     allow-list of authoritative domains (edit it in the workflow; max 20). Used only for *current*
+     regulations, recent changes or best practices, or when the documents don't answer.
+4. The answer comes back with citations and inline screenshots. When the web was used, it has two separate
+   sections — **From your documents** and **From the web — current public sources (verify before relying)** —
+   and any conflict between them is called out instead of silently resolved.
+5. **Review mode** ("review this template against our standards and current regulations"): the agent reads the
+   template in full, searches related internal standards, checks current regulations on the web, and returns a
+   summary, what's covered, a prioritized table of recommended additions (every source marked doc or web),
+   possibly outdated items and suggested wording.
 
 ### Privacy & operations
 
@@ -96,6 +114,9 @@ flowchart LR
   container using Open WebUI's own delete code), logs 1 year.
 - **Right to erasure:** `ops/forget-user.sh someone@example.com [--dry-run] [--delete-account]` removes a
   person's chats, agent memory, n8n run records and usage rows, and logs *that* it happened (hash + counts).
+- **Web search sends only a short, model-written search query** to the web search provider through Azure; the
+  agent is instructed never to put document text, file names, project names or people in a query. Results come
+  only from allow-listed domains (federal defaults plus any state or local sites you add).
 - **Usage without surveillance:** active users and question counts from hashes, never question text.
 - **Daily health message** (Telegram): documents, chunks, images, spreadsheets, last-24 h ingestion,
   files still failing, usage.
@@ -112,6 +133,7 @@ flowchart LR
 | Open WebUI | 0.12.3 | Chat front end, accounts, chat history |
 | Gotenberg | 8.37.0 | LibreOffice conversion (PPTX/DOCX → PDF) and PDF splitting |
 | Microsoft Graph | v1.0 | Reading the SharePoint library (delegated OAuth) |
+| Azure OpenAI Responses API (`web_search` tool) | — | Allow-listed web search for current regulations and best practices |
 | Telegram Bot API | — | Daily health message |
 
 **Models** (Azure AI Foundry, Data Zone Standard US):
@@ -120,7 +142,7 @@ flowchart LR
 |---|---|
 | `mistral-document-ai-2512` | OCR: page text as Markdown + image descriptions |
 | `text-embedding-3-small` (1536-d) | Embeddings for chunks and questions |
-| `gpt-5.4-mini` | Agentic chunking, reranking, answering |
+| `gpt-5.4-mini` | Agentic chunking, reranking, answering, web research summaries, describing photos with no text |
 
 ## What it costs (approximate, pay-as-you-go)
 
@@ -163,9 +185,10 @@ overwrote a newer workflow, and more. They're collected, with fixes, in
 - Share safely: HTTPS + company sign-in in front of Open WebUI; per-person document permissions
 - Read-only SharePoint access scoped to one site (`Sites.Selected`)
 - Signed (private) image links instead of a public bucket
-- Meeting recordings: index transcripts saved next to videos; later, automatic transcription
+- Meeting recordings: today transcribed locally (Whisper) and attached with `ops/ingest-transcript.py`; next, a transcription step inside the pipeline
 - Skip duplicate documents (same deck as PDF and PPTX); spreadsheet header-row detection
-- Honour Graph `Retry-After` exactly; shorter rerank snippets to cut cost per question
+- Honour Graph `Retry-After` exactly; a local cross-encoder reranker instead of GPT to cut cost per question
+- Answer cache (reuse an answer while none of its cited documents changed); upload a template straight into chat for review mode
 
 ## Keeping it clean
 

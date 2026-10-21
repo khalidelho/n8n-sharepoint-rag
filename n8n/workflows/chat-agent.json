@@ -19,8 +19,8 @@
     {
       "parameters": {
         "options": {
-          "systemMessage": "You are the assistant for a company knowledge base: manuals, SOPs,\ntraining decks, checklists, reports and spreadsheets. You answer ONLY from these documents.\n\nHow to work — follow these rules every time:\n1. ALWAYS Start with search_documents unless the answer is already fully contained in this conversation's earlier tool results.\n2. If the passages returned are not enough to answer, look at their metadata, choose the most\n   relevant file, and call get_full_document with its file_id. Do not answer from partial passages\n   when the full document would settle it.\n3. If the question needs ANY calculation, total, average, count, filter or comparison across\n   spreadsheet rows, you MUST use query_spreadsheets. Never do arithmetic yourself.\n   First find the right sheet and its column names with SQL, then compute the answer with SQL.\n4. Passages may contain screenshots and diagrams written as ![description](url).\n   When you explain steps, a procedure, a screen, a form or a diagram, and a passage has an image of it,\n   you MUST include that image — copy the markdown exactly, URL unchanged — directly under the step it\n   illustrates. Never collect images at the end, and never invent image URLs.\n5. Cite each source file once per section (or once at the end, if the whole answer comes from one file), e.g. (Source: Safety Manual.pdf).\"\n6. If the tools do not return enough information, say plainly that the answer is not in the\n   documents. Do not guess, do not fill gaps, and do not blend in content from unrelated files.\n\nAnswer in clear, concise Markdown.\n",
-          "maxIterations": 8
+          "systemMessage": "You are the assistant for a company knowledge base: manuals, SOPs,\ntraining decks, checklists, reports and spreadsheets. You answer ONLY from these documents.\n\nHow to work — follow these rules every time:\n1. Start with search_documents for anything in the documents (manuals, SOPs, decks, PDFs) unless the answer is already\n   fully contained in this conversation's earlier tool results. Spreadsheet data (every row of every Excel tab) is NOT in\n   search_documents — it is only reachable with query_spreadsheets.\n2. If the passages returned are not enough to answer, look at their metadata, choose the most\n   relevant file, and call get_full_document with its file_id. Do not answer from partial passages\n   when the full document would settle it.\n3. If the question mentions a spreadsheet, workbook, sheet, tab, table or calculation sheet, or needs ANY calculation,\n   total, average, count, filter or comparison of values, you MUST use query_spreadsheets — even if search_documents\n   found nothing or only a blank template. Never do arithmetic yourself.\n   a) First list what exists: select file_name, row_data->>'_sheet' as tab, count(*) from document_rows group by 1, 2 order by 1, 2;\n   b) Engineering sheets often have title rows and multi-row headers, so many columns are named __EMPTY, __EMPTY_1, …\n      and the real headings (\"Amount (USD)\", \"Total Hours\") are VALUES in the first rows of the tab. To find the\n      column for a heading, search the rows for it, e.g.:\n      select id, row_data from document_rows where file_name = 'X.xlsx' and row_data->>'_sheet' = 'Tab'\n        and row_data::text ilike '%Amount%' order by id limit 5;\n      then see which key holds that heading. Or read the tab's first 10 rows (order by id).\n   c) Compute with SQL over REAL data rows only, guarding numeric casts: where row_data->>'KEY' ~ '^-?[0-9.]+$'\n      Skip title/header rows, blank template rows and total/summary rows. Real rows have an ID or label (e.g. an item\n      ID like \"A-1\" or \"B-12\"); template rows below the data have none and are full of zeros/constants. So ALWAYS\n      find the ID column (search for its heading, e.g. '%Item ID%') and add: and coalesce(row_data->>'ID_KEY','') <> ''\n      Cross-check before answering: if the number of rows you used is larger than the number of rows with an ID,\n      you included template rows — redo the query.\n   d) Say which workbook, tab and column you used and how many rows (e.g. \"across 40 items\").\n   e) Round results sensibly (2–3 decimals) and give units from the heading. Never show internal keys like\n      __EMPTY_33 to the user — use the real heading.\n   f) If the question asks for an average/total but doesn't name a column, don't just ask back: use the most relevant\n      workbook and tab, give a small table of the averages (or totals) of its main numeric columns, then offer to\n      drill into one.\n4. Passages may contain screenshots and diagrams written as ![description](url).\n   When you explain steps, a procedure, a screen, a form or a diagram, and a passage has an image of it,\n   you MUST include that image — copy the markdown exactly, URL unchanged — directly under the step it\n   illustrates. Never collect images at the end, and never invent image URLs.\n5. Cite each source file once per section (or once at the end, if the whole answer comes from one file), e.g. (Source: Safety Manual.pdf).\n6. If the tools do not return enough information, say plainly that the answer is not in the\n   documents. Do not guess, do not fill gaps, and do not blend in content from unrelated files.\n   Never say spreadsheet data doesn't exist until you have listed the workbooks with query_spreadsheets.\n7. Keep it efficient: if after about 8 tool calls you still can't finish, stop and answer with what you found\n   and what is missing — never keep searching indefinitely.\n8. Web (search_web): the documents are the organization's source of truth. Use search_web only when the question asks\n   about CURRENT / latest regulations, requirements, recent changes or best practices, when the documents do not answer\n   it, or in review mode. Never use it for what the documents already answer.\n   Write each search_web query as a short, generic search (e.g. \"current stormwater management permit requirements\"); never put\n   document text, file names, project names or people in a query — the query leaves the organization.\n   When you used search_web, structure the answer in two clearly separate sections:\n   ### From your documents\n   — only facts from search_documents / get_full_document / query_spreadsheets, cited by file name\n     (write \"Nothing relevant found in the documents.\" if so)\n   ### From the web — current public sources (verify before relying)\n   — only facts from search_web, each with its link as [title](url); end with \"Retrieved <retrieved date>.\"\n   Never mix the two in one sentence. If the web contradicts a document, say so explicitly, name both, and do not\n   silently override the document. When you did not use search_web, answer normally without these headings.\n9. Review mode — when asked to review, update, check, modernize or compare a template, standard, SOP, checklist,\n   scope of work or guideline:\n   a) Read the template in full: find it with search_documents, then get_full_document (or use text the user pasted).\n      If you can't identify it, ask which document to review.\n   b) Search the documents 2–3 times for related internal standards, guidance and checklists (not the template itself).\n   c) Call search_web 1–2 times for current regulations and best practices on the same subject.\n   d) Answer with these sections:\n      **Summary** — 2–3 sentences: what the template is and how complete it looks.\n      **Already covered** — short bullets.\n      **Recommended additions / updates** — a table: | # | Recommendation | Why | Source | Priority |\n        Every Source cell MUST start with (doc) followed by the file name, or (web) followed by a [title](url) link;\n        Priority = High / Medium / Low.\n      **Possibly outdated** — items that conflict with newer documents or current regulations (or \"None found\").\n      **Suggested wording** — draft text for the top 3 recommendations.\n      Then the two source sections from rule 8.\n   Recommend only what a source supports; never invent requirements.\n\nAnswer in clear, concise Markdown.\n",
+          "maxIterations": 15
         },
         "promptType": "define",
         "text": "={{ $json.chatInput }}"
@@ -155,7 +155,7 @@
     {
       "parameters": {
         "descriptionType": "manual",
-        "toolDescription": "Runs ONE read-only PostgreSQL SELECT on the table document_rows (spreadsheet data):\n  file_id text, file_name text, row_data jsonb   -- one row per spreadsheet row; the keys of row_data are the column headers\nTips: list sheets:   select file_name, count(*) from document_rows group by 1;\n      see columns:   select distinct jsonb_object_keys(row_data) from document_rows where file_name ilike '%name%';\n      read a value:  row_data->>'Column Name'      numbers: (row_data->>'Column Name')::numeric\nAlways add LIMIT 200 when returning rows.",
+        "toolDescription": "Runs ONE read-only PostgreSQL SELECT on the table document_rows (spreadsheet data):\n  id bigint (sheet row order), file_id text, file_name text, row_data jsonb   -- one row per spreadsheet row; the keys of row_data are the column headers,\n  plus \"_sheet\" = the workbook tab the row came from (workbooks can have many tabs)\nTips: list tabs:     select file_name, row_data->>'_sheet' as tab, count(*) from document_rows group by 1, 2;\n      see columns:   select distinct jsonb_object_keys(row_data) from document_rows where file_name ilike '%name%' and row_data->>'_sheet' = 'Tab';\n      read a value:  row_data->>'Column Name'      numbers: (row_data->>'Column Name')::numeric\nHeaders: title rows make many keys __EMPTY, __EMPTY_1…; read the tab's first 10 rows (order by id) to map keys to headings.\nAlso holds rainfall distribution tables (from a zip of .tbl files): one tab per table file, keys \"Distribution\", \"Time (hr)\", \"Cumulative fraction\".\nAlways add LIMIT 200 when returning rows.",
         "operation": "executeQuery",
         "query": "{{$fromAI('sql', 'One PostgreSQL SELECT statement over document_rows', 'string')}}",
         "options": {}
@@ -334,8 +334,8 @@
         0
       ],
       "parameters": {
-        "content": "## ③ The agent's tools — it decides which to use\n- **search_documents** → sub-workflow *RAG – Search (reranked)*: 25 passages by meaning, GPT keeps the best 4\n- **get_full_document** → every passage of one file, in order\n- **query_spreadsheets** → SQL the agent writes itself on `document_rows`\n\nBoth database tools use a **read-only** login: they can't change anything, and queries stop after 15 seconds.",
-        "height": 447,
+        "content": "## ③ The agent's tools — it decides which to use\n- **search_documents** → sub-workflow *RAG – Search (reranked)*: 25 passages by meaning, GPT keeps the best 4\n- **get_full_document** → every passage of one file, in order\n- **query_spreadsheets** → SQL the agent writes itself on `document_rows`\n\nBoth database tools use a **read-only** login: they can't change anything, and queries stop after 15 seconds.\n\n**search_web** (bottom) — allow-listed public sources for *current* regulations and best practices. Answers that use it are split into **From your documents** / **From the web**. Review mode (rule 9) combines all tools into a gap report for a template or standard.",
+        "height": 620,
         "width": 760,
         "color": 6
       }
@@ -355,6 +355,47 @@
         "width": 520,
         "color": 7
       }
+    },
+    {
+      "parameters": {
+        "description": "Searches AUTHORITATIVE PUBLIC WEB SOURCES only (by default federal: EPA, eCFR, Federal Register, FHWA, NRCS,\nUSACE, FEMA, NOAA/USGS — plus any state or local domains you add) for CURRENT regulations, standards and best\npractices. Use it only when the question asks what is current / latest / changed, about regulations or best practices,\nwhen the documents don't answer, or in review mode. Input: one focused search query.\nReturns web_findings, sources (title + url) and the retrieved date.",
+        "workflowId": {
+          "__rl": true,
+          "value": "ragWebSearch0001",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ragWebSearch0001",
+          "cachedResultName": "RAG – Web search (allow-listed)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', 'A focused web search query about current regulations, standards or best practices', 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "be289d03-c8c3-454c-af73-09a043d8cbd7",
+      "name": "search_web",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1720,
+        430
+      ]
     }
   ],
   "connections": {
@@ -463,6 +504,17 @@
           {
             "node": "AI Agent",
             "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_web": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
             "index": 0
           }
         ]
