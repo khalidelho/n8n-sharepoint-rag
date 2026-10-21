@@ -1,0 +1,2594 @@
+{
+  "id": "GwkCOkOcb9EAOX9e",
+  "name": "RAG – Ingestion",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        640,
+        176
+      ],
+      "id": "90b5d4fb-8f69-4365-aa8a-e7c48e9ea227",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "url": "https://graph.microsoft.com/v1.0/sites/__SHAREPOINT_SITE_ID__/drive/root/children?$select=id,name,file,folder,lastModifiedDateTime&$top=200",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftOAuth2Api",
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "responseContainsNextURL",
+              "nextURL": "={{ $response.body[\"@odata.nextLink\"] }}",
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body[\"@odata.nextLink\"] }}"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1488,
+        208
+      ],
+      "id": "dba64cc1-2203-4dbb-823b-c68e65464e68",
+      "name": "Graph – list folder",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "microsoftOAuth2Api": {
+          "name": "Microsoft Graph – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "value",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1.1,
+      "position": [
+        1728,
+        208
+      ],
+      "id": "cfd3f4db-6c3a-43da-88ea-4b6cf5c0704d",
+      "name": "One item per file"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d83bc827-ca0a-46d7-b394-834ba50b241e",
+              "leftValue": "={{ $json.file }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        1968,
+        208
+      ],
+      "id": "569ed898-39ae-4835-8846-95700010811e",
+      "name": "Files only"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        640,
+        368
+      ],
+      "id": "90c2b13d-5ab2-43a6-92cc-f2ab5fc2ff2b",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tidy each Graph file into the fields the rest of the workflow uses,\n// and URL-decode the name (Graph can return %20 etc. — the episode's merge pitfall).\nfunction decode(name) {\n  try {\n    return decodeURIComponent(name);\n  } catch (e) {\n    return name; // a literal \"%\" in a real file name (e.g. \"50% discount.pdf\") isn't encoding — keep it\n  }\n}\n\nreturn $input.all().map(item => ({\n  json: {\n    file_id: item.json.id,                                        // the real file ID (for download)\n    file_name: decode(item.json.name),                            // the merge key\n    content_hash: item.json.file?.hashes?.quickXorHash ?? null,   // Microsoft's content fingerprint\n    graph_last_modified: item.json.lastModifiedDateTime,\n  },\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2208,
+        208
+      ],
+      "id": "c26d5eb0-8419-499c-b8c8-4c3c966c08d3",
+      "name": "Decode names (Graph)"
+    },
+    {
+      "parameters": {
+        "resource": "item",
+        "site": {
+          "__rl": true,
+          "value": "__SHAREPOINT_SITE_ID__",
+          "mode": "list",
+          "cachedResultName": "Your SharePoint site",
+          "cachedResultUrl": "https://__SHAREPOINT_HOST__/sites/__SITE_PATH__"
+        },
+        "list": {
+          "__rl": true,
+          "value": "__SHAREPOINT_LIST_ID__",
+          "mode": "list",
+          "cachedResultName": "Documents"
+        },
+        "returnAll": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.microsoftSharePoint",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        384
+      ],
+      "id": "cfa7fb0c-3b3f-455c-b017-c13356ba31e5",
+      "name": "SharePoint – get timestamps",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "microsoftOAuth2Api": {
+          "name": "Microsoft Graph – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn each SharePoint list item into { file_name, last_modified } — root of the library only.\n// The name only exists inside webUrl, URL-encoded (Shared%20Documents/My%20File.pdf).\nfunction decode(s) {\n  try { return decodeURIComponent(s); } catch (e) { return s; }\n}\n\nconst LIBRARY = '/sites/__SITE_PATH__/Shared%20Documents/';\nconst out = [];\n\nfor (const item of $input.all()) {\n  const url = item.json.webUrl ?? '';\n  const i = url.indexOf(LIBRARY);\n  if (i === -1) continue;                      // not in the Documents library\n  const rest = url.slice(i + LIBRARY.length);  // \"2018_Annual%20Report.pdf\"  or  \"Tag/file.pdf\"\n  if (rest.includes('/')) continue;            // inside a subfolder → Branch A doesn't list these either\n  out.push({\n    json: {\n      file_name: decode(rest),                 // \"2018_Annual Report.pdf\" — matches Branch A's file_name\n      last_modified: item.json.lastModifiedDateTime,\n    },\n  });\n}\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        384
+      ],
+      "id": "3cd288f4-9feb-4640-bfbe-1d91ad730a69",
+      "name": "Decode names (SharePoint)"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "advanced": true,
+        "mergeByFields": {
+          "values": [
+            {
+              "field1": "file_name",
+              "field2": "file_name"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2448,
+        208
+      ],
+      "id": "552917e4-d8dc-4824-91d7-f441f76e9fbb",
+      "name": "Merge on file name"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select file_id, file_name, last_modified, content_hash\nfrom document_metadata;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        3040,
+        224
+      ],
+      "id": "b767246a-bb4b-4fd0-bd13-0a244424ab8e",
+      "name": "Read document_metadata",
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compare SharePoint NOW against what the database REMEMBERS from last run.\n// Output: one item per file that needs work, tagged action = new | updated | touch | deleted.\n// Nothing changed → no output → the run stops here (the episode's \"it simply stops\").\n\n// current SharePoint files, minus OLD_ / Do Not Use (filtered before this node)\nconst now = $('Skip outdated files').all().map(i => i.json);\nconst memory = $('Read document_metadata').all()\n  .map(i => i.json)\n  .filter(r => r.file_id);               // skip the empty placeholder from \"Always Output Data\"\n\nconst memoryById = new Map(memory.map(r => [r.file_id, r]));\nconst nowIds = new Set(now.map(f => f.file_id));\nconst out = [];\n\nfor (const f of now) {\n  const m = memoryById.get(f.file_id);\n\n  if (!m) {                                                   // never seen this ID → NEW\n    out.push({ json: { action: 'new', ...f } });\n    continue;\n  }\n\n  const newer   = new Date(f.last_modified) > new Date(m.last_modified);\n  const renamed = f.file_name !== m.file_name;\n  const contentChanged = (f.content_hash && m.content_hash)\n    ? f.content_hash !== m.content_hash                       // hash is the real test\n    : newer;                                                  // no hash? fall back to the timestamp\n\n  if (contentChanged || renamed) {\n    out.push({ json: { action: 'updated', ...f } });          // reprocess (rename too, so citations show the new name)\n  } else if (newer) {\n    out.push({ json: { action: 'touch', ...f } });            // only tags/timestamp moved → just update the row\n  }\n  // otherwise unchanged → nothing to do\n}\n\nfor (const m of memory) {\n  if (!nowIds.has(m.file_id)) {                               // remembered, but gone from SharePoint → DELETED\n    out.push({ json: { action: 'deleted', file_id: m.file_id, file_name: m.file_name } });\n  }\n}\n\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3280,
+        224
+      ],
+      "id": "c775ed04-5c85-47b7-b2b1-cee97db8a372",
+      "name": "Compare: what changed?"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "new",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "a0af925f-6619-48ac-8cf5-c26b6d821264"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "new"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "f8dcc2be-2363-4ae0-a441-ec278b1da26a",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "updated",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "updated"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "de2a4186-1f52-441c-8dd8-62429d81d8e5",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "touch",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "touch"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "e41dbac1-2abf-444a-b27d-673cb5cf65bb",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "deleted",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "deleted"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        3520,
+        224
+      ],
+      "id": "6d6a320a-d45d-4a7d-bbad-3604f6640d2e",
+      "name": "Route by action"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with log as (\n  insert into ingestion_log (file_id, file_name, step, status)\n  select file_id, file_name, 'delete', 'ok' from document_metadata where file_id = $1\n),\nd1 as (delete from documents     where metadata->>'file_id' = $1),\nd2 as (delete from document_rows where file_id = $1),\nd3 as (delete from document_metadata where file_id = $1)\nselect $1::text as file_id,\n       coalesce((select json_agg(name) from storage.objects where bucket_id = 'document-images' and name like $1 || '/%'), '[]'::json) as old_images;",
+        "options": {
+          "queryReplacement": "={{ $json.file_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        3520,
+        608
+      ],
+      "id": "484c2a81-e245-42a4-9a19-2e536b7b25fb",
+      "name": "Forget deleted file",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update document_metadata\nset last_modified = $2::timestamptz, updated_at = now()\nwhere file_id = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.file_id }},{{ $json.last_modified }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        3520,
+        416
+      ],
+      "id": "8844ebca-7b23-41fb-8b76-b5f7acc2f4a6",
+      "name": "Update timestamp only",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with d1 as (delete from documents     where metadata->>'file_id' = $1),\n     d2 as (delete from document_rows where file_id = $1)\nselect $1::text as file_id,\n       coalesce((select json_agg(name) from storage.objects where bucket_id = 'document-images' and name like $1 || '/%'), '[]'::json) as old_images;",
+        "options": {
+          "queryReplacement": "={{ $json.file_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        288,
+        1120
+      ],
+      "id": "5ad8ee7d-f5d1-4b2c-bb90-2f770da7fbc6",
+      "name": "Clear old chunks & rows",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "maxItems": 10
+      },
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        48,
+        1120
+      ],
+      "id": "be67a01b-ee0a-4f05-a9a7-b3653b61e45e",
+      "name": "Batch: 10 files per run"
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.microsoft.com/v1.0/sites/__SHAREPOINT_SITE_ID__/drive/items/{{ $json.file_id }}/content",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftOAuth2Api",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1008,
+        1120
+      ],
+      "id": "bdac0681-5570-4aaf-9711-0f7377348ab1",
+      "name": "Graph – download file",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "microsoftOAuth2Api": {
+          "name": "Microsoft Graph – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// The download returns only the file bytes; re-attach the file's details from before the download.\nconst info = $('Batch: 10 files per run').item.json;   // the matching item from before the download\nconst ext = (info.file_name.split('.').pop() || '').toLowerCase();\n\nreturn {\n  json: { ...info, extension: ext },   // file_id, file_name, content_hash, action … + extension\n  binary: $input.item.binary,          // keep the downloaded file\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        1120
+      ],
+      "id": "cebe8737-5552-47c2-9333-6ee365158eb4",
+      "name": "Attach file info"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ ['xlsx','xlsm','xls','csv'].includes($json.extension) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "eb5a3adb-5745-46ed-b658-41bd5a3910ec"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "spreadsheet"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "0e07eedc-f1f6-4786-b689-5b26baeae635",
+                    "leftValue": "={{ ['txt','log','md'].includes($json.extension) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "text"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "deb913b2-499c-4727-9573-fb98af7f75c1",
+                    "leftValue": "={{ ['pdf','docx','pptx','doc','jpg','jpeg','png'].includes($json.extension) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ocr"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "unsupported"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1488,
+        1120
+      ],
+      "id": "16937e69-479e-4063-a48f-211298c495d7",
+      "name": "Route by file type"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        1840,
+        1104
+      ],
+      "id": "f3043482-dc0f-49a9-a952-9785617eacce",
+      "name": "Read spreadsheet rows"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Wrap each spreadsheet row with the file it came from (the episode: \"JSON right next to the file ID and file name\").\nconst info = $('Attach file info').item.json;\nreturn {\n  json: {\n    file_id: info.file_id,\n    file_name: info.file_name,\n    last_modified: info.last_modified,\n    content_hash: info.content_hash,\n    row_data: $input.item.json,        // the whole row, exactly as in the sheet\n  },\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        1104
+      ],
+      "id": "9a2b4f77-7a88-4fd3-9631-50afac257e76",
+      "name": "Shape rows"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into document_rows (file_id, file_name, row_data)\nvalues ($1, $2, $3::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [$json.file_id, $json.file_name, $json.row_data] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        2320,
+        1104
+      ],
+      "id": "5cea79bb-12d3-46a4-8d3f-37046b9844fc",
+      "name": "Write rows",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per spreadsheet FILE (not per row), with how many rows were stored.\n// Built from every file that entered the spreadsheet path — so a sheet that yielded 0 rows\n// still gets marked as handled instead of coming back as \"new\" every run.\nconst counts = new Map();\nfor (const { json } of $('Shape rows').all()) {\n  counts.set(json.file_id, (counts.get(json.file_id) ?? 0) + 1);\n}\n\nreturn $('Route by file type').all(0).map(({ json: f }) => ({   // output 0 = spreadsheet\n  json: {\n    file_id: f.file_id,\n    file_name: f.file_name,\n    last_modified: f.last_modified,\n    content_hash: f.content_hash,\n    row_count: counts.get(f.file_id) ?? 0,\n  },\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        1104
+      ],
+      "id": "9f70fb39-26cd-47e6-a80c-83dc6bcf3118",
+      "name": "One result per file"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with log as (\n  insert into ingestion_log (file_id, file_name, step, status, chunk_count)\n  values ($1, $2, 'rows_write', case when $5::int = 0 then 'empty' else 'ok' end, $5::int)\n)\ninsert into document_metadata (file_id, file_name, last_modified, content_hash)\nvalues ($1, $2, $3::timestamptz, $4)\non conflict (file_id) do update\n  set file_name = excluded.file_name, last_modified = excluded.last_modified,\n      content_hash = excluded.content_hash, updated_at = now();",
+        "options": {
+          "queryReplacement": "={{ [$json.file_id, $json.file_name, $json.last_modified, $json.content_hash, $json.row_count] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        2800,
+        1104
+      ],
+      "id": "012c965b-a71a-4fd9-98c1-7fdf7aae2333",
+      "name": "Mark spreadsheet processed",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with log as (\n  insert into ingestion_log (file_id, file_name, step, status, chunk_count)\n  values ($1, $2, 'skip_unsupported', 'skipped', null)\n)\ninsert into document_metadata (file_id, file_name, last_modified, content_hash)\nvalues ($1, $2, $3::timestamptz, $4)\non conflict (file_id) do update\n  set file_name = excluded.file_name, last_modified = excluded.last_modified,\n      content_hash = excluded.content_hash, updated_at = now();",
+        "options": {
+          "queryReplacement": "={{ [$json.file_id, $json.file_name, $json.last_modified, $json.content_hash] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1488,
+        1312
+      ],
+      "id": "160143a6-25d9-4b5a-a480-f6dabf2a8e99",
+      "name": "Mark skipped",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// One OCR request per part, read straight from the file — no separate base64 step, so the\n// execution stores the document once instead of twice. Mistral takes the part inline as a\n// data URL (data:<type>;base64,<bytes>) and is asked to DESCRIBE each image it finds\n// (the episode's \"it leaves a description\"), which ends up in the searchable text.\nconst out = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const info = items[i].json;                       // file details + part / of / part_mime\n  const b64 = (await this.helpers.getBinaryDataBuffer(i, 'data')).toString('base64');\n  const dataUrl = `data:${info.part_mime};base64,${b64}`;\n  const document = info.part_mime.startsWith('image/')\n    ? { type: 'image_url', image_url: dataUrl }\n    : { type: 'document_url', document_url: dataUrl };\n  out.push({\n    json: { ...info, body: { model: 'mistral-document-ai-2512', document, include_image_base64: true,\n      bbox_annotation_format: { type: 'json_schema', json_schema: { name: 'image_description', strict: true, schema: {\n      type: 'object', additionalProperties: false, required: ['description'],\n      properties: { description: { type: 'string',\n        description: 'One or two sentences describing what the image shows, for someone who cannot see it.' } } } } },\n    } },\n    pairedItem: { item: i },\n  });\n}\nreturn out;"
+      },
+      "id": "929ba1a3-2a86-4933-a256-f389f9ea6ec4",
+      "name": "Build OCR request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        1840
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://__AZURE_AI_HOST__/providers/mistral/azure/ocr",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 7000
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "6ad92089-5192-49ba-a936-e21975f1ce0a",
+      "name": "Mistral OCR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2320,
+        1840
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Mistral OCR – RAG"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1890a6c1-644a-4fcd-8b41-17339c9d8eb8",
+              "leftValue": "={{ !/^old_/i.test($json.file_name) && !/do not use/i.test($json.file_name) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        2688,
+        208
+      ],
+      "id": "6bf3339c-8f93-4646-bf4f-87f51e0d3c13",
+      "name": "Skip outdated files"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Check each PART's OCR result: ok / retry / failed. (Emptiness is judged per FILE in the next node,\n// so a blank back-cover part doesn't fail a whole manual.)\nconst res = $input.item.json;\nconst info = { ...$('Build OCR request').item.json };\ndelete info.body;                                        // drop the (huge) base64 request\n\nconst status = res.statusCode;\nconst pages = Array.isArray(res.body?.pages) ? res.body.pages : [];\nconst cleanMsg = m => String(m ?? '').replace(/[A-Za-z0-9+/=]{100,}/g, '<file>').slice(0, 300);\n\nlet ocr_status, reason = null;\nif (status === 200) {\n  ocr_status = 'ok';\n} else if (!status || status === 408 || status === 429 || status >= 500) {\n  ocr_status = 'retry'; reason = `HTTP ${status ?? 'timeout'} — temporary, will retry next run`;\n} else {\n  ocr_status = 'failed'; reason = `HTTP ${status}: ${cleanMsg(res.body?.message ?? JSON.stringify(res.body))}`;\n}\nreturn { json: { ...info, ocr_status, reason, pages } };"
+      },
+      "id": "a91823ec-77e3-49ae-bab3-fc6e6cd6eaa5",
+      "name": "Validate OCR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        1840
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ocr_status }}",
+                    "rightValue": "ok",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "1396dae0-bd3b-40ee-8e0f-ddb38a8c99b0"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ok"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ocr_status }}",
+                    "rightValue": "retry",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "6a619411-478b-4d3a-aebe-4c35f573a77b"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "retry"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ocr_status }}",
+                    "rightValue": "failed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "1158545a-a2cf-45be-8f84-6a204edce150"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "failed"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        3040,
+        1840
+      ],
+      "id": "805b0d01-4b55-43d4-9d16-b8791b3bdce6",
+      "name": "Route OCR result"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into ingestion_log (file_id, file_name, step, status, message)\nvalues ($1, $2, 'ocr', 'retry', $3);",
+        "options": {
+          "queryReplacement": "={{ [$json.file_id, $json.file_name, $json.reason] }}"
+        }
+      },
+      "id": "4eb308bd-d74c-4daf-9448-ac2f5615d143",
+      "name": "Log OCR retry",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        3040,
+        2032
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with log as (\n  insert into ingestion_log (file_id, file_name, step, status, message)\n  values ($1, $2, 'ocr', 'failed', $5)\n)\ninsert into document_metadata (file_id, file_name, last_modified, content_hash)\nvalues ($1, $2, $3::timestamptz, $4)\non conflict (file_id) do update\n  set file_name = excluded.file_name, last_modified = excluded.last_modified,\n      content_hash = excluded.content_hash, updated_at = now();",
+        "options": {
+          "queryReplacement": "={{ [$json.file_id, $json.file_name, $json.last_modified, $json.content_hash, $json.reason] }}"
+        }
+      },
+      "id": "7e3eefdd-133c-49a5-8cad-cbf9c23d15de",
+      "name": "Mark OCR failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        3040,
+        2208
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ ['jpg','jpeg','png'].includes($json.extension) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "b4fa5ceb-5aff-4f36-a6b8-33dfe314005a"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "image"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ !['jpg','jpeg','png'].includes($json.extension) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "21072b10-d5d9-431f-a911-c8ca33a68394"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "document"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        48,
+        1840
+      ],
+      "id": "130e715b-6247-4bd1-8c26-fcb96de0fc56",
+      "name": "Image or document?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Images are already small and single-page: send them to OCR as one part.\nreturn $input.all().map((item, i) => ({\n  json: { ...item.json, part: 1, of: 1, part_mime: item.json.extension === 'png' ? 'image/png' : 'image/jpeg' },\n  binary: item.binary,\n  pairedItem: { item: i },\n}));"
+      },
+      "id": "a907634f-ce69-43ba-bec6-48228cbab05e",
+      "name": "Image: one part",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        1840
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ ['docx','pptx','doc'].includes($json.extension) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "8def4463-9cbf-4e52-a8b2-656ba4448781"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "office"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.extension === 'pdf' }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "44ef8a9d-e8d2-4197-96e6-0f186d4ca325"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "pdf"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        528,
+        2032
+      ],
+      "id": "180d17fd-47df-473d-94fb-3b2e958bed5e",
+      "name": "Office or PDF?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://gotenberg:3000/forms/libreoffice/convert",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "reduceImageResolution",
+              "value": "true"
+            },
+            {
+              "name": "maxImageResolution",
+              "value": "150"
+            },
+            {
+              "name": "quality",
+              "value": "80"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "f83e94df-bf8d-4b13-896b-0c63ee9565be",
+      "name": "Gotenberg: convert to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        768,
+        2032
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://gotenberg:3000/forms/pdfengines/split",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "splitMode",
+              "value": "intervals"
+            },
+            {
+              "name": "splitSpan",
+              "value": "10"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "626e728a-f863-4112-bb4d-644302d5683e",
+      "name": "Gotenberg: split every 10 pages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1008,
+        2032
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $binary.data.mimeType === 'application/zip' }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "c923b986-094f-4fe6-81b7-9c4ef0c60da5"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "zip"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $binary.data.mimeType !== 'application/zip' }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "89cd1859-2cf6-4e9f-92ea-f3e6f5b7cd04"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "single"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1248,
+        2032
+      ],
+      "id": "0a31fc82-5407-41d4-aaf9-1df96d1cd246",
+      "name": "Zip or single PDF?"
+    },
+    {
+      "parameters": {
+        "outputPrefix": "part_"
+      },
+      "id": "16be05cd-46a6-4694-b9b8-7c23331ba24a",
+      "name": "Unzip parts",
+      "type": "n8n-nodes-base.compression",
+      "typeVersion": 1.1,
+      "position": [
+        1488,
+        2032
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per ≤10-page PDF part (Azure OCR limit), in page order, carrying the file's details.\n// Gotenberg names parts <name>_0.pdf, <name>_1.pdf … → sort numerically.\nconst out = [];\n$input.all().forEach((item, i) => {\n  const info = $('Attach file info').itemMatching(i).json;\n  const bins = Object.values(item.binary ?? {})\n    .sort((a, b) => (a.fileName ?? '').localeCompare(b.fileName ?? '', undefined, { numeric: true }));\n  bins.forEach((bin, p) => out.push({\n    json: { ...info, part: p + 1, of: bins.length, part_mime: 'application/pdf' },\n    binary: { data: bin },\n    pairedItem: { item: i },\n  }));\n});\nreturn out;"
+      },
+      "id": "04b69dbf-0342-448f-a128-b76f67314e3e",
+      "name": "Document parts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        2032
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Put each file back together: parts in page order → one document. All-or-nothing:\n// any part retry → whole file retry; any part failed / missing / no usable text → whole file failed.\nconst byFile = new Map();\nfor (const { json } of $input.all()) {\n  if (!byFile.has(json.file_id)) byFile.set(json.file_id, []);\n  byFile.get(json.file_id).push(json);\n}\n\nconst out = [];\nfor (const parts of byFile.values()) {\n  parts.sort((a, b) => a.part - b.part);\n  const { part, of, part_mime, pages: _p, ocr_status: _s, reason: _r, ...file } = parts[0];\n\n  const allPages = [];\n  for (const p of parts) allPages.push(...(p.pages ?? []));\n  allPages.forEach((pg, i) => { pg.index = i; });            // renumber pages across parts\n\n  const markdown = allPages.map(p => p.markdown ?? '').join('\\n\\n');\n  const imageCount = allPages.reduce((n, p) => n + (p.images?.length ?? 0), 0);\n  const realText = markdown.replace(/!\\[[^\\]]*\\]\\([^)]*\\)/g, '').trim();\n\n  let ocr_status = 'ok', reason = null;\n  const bad = s => parts.find(p => p.ocr_status === s);\n  if (bad('retry'))                      { ocr_status = 'retry';  reason = `part ${bad('retry').part}/${of}: ${bad('retry').reason}`; }\n  else if (bad('failed'))                { ocr_status = 'failed'; reason = `part ${bad('failed').part}/${of}: ${bad('failed').reason}`; }\n  else if (parts.length !== of)          { ocr_status = 'failed'; reason = `only ${parts.length} of ${of} parts came back`; }\n  else if (realText.length < 20 && !imageCount) { ocr_status = 'failed'; reason = 'OCR returned no usable text'; }\n\n  out.push({ json: { ...file, ocr_status, reason, parts: of, page_count: allPages.length,\n                     image_count: imageCount, text_chars: realText.length, markdown, pages: allPages } });\n}\nreturn out;"
+      },
+      "id": "04c6e58a-96d6-47ed-9b02-265198fe5644",
+      "name": "Join parts per file",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        1840
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gotenberg decides how to read a file from the extension in the upload's file name.\n// SharePoint names with apostrophes etc. can arrive mangled, so upload under a plain name.\n// (The real name stays in file_name for citations.)\nreturn $input.all().map((item, i) => {\n  const ext = item.json.extension;\n  item.binary.data.fileName = `document.${ext}`;\n  item.binary.data.fileExtension = ext;\n  return { json: item.json, binary: item.binary, pairedItem: { item: i } };\n});"
+      },
+      "id": "c40c8d15-e5be-4606-b9d2-3a7692bfe3cc",
+      "name": "Safe file name",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        2032
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// The episode's image step: OCR left placeholders like ![img-0.jpeg](img-0.jpeg) in each page.\n// Keep only meaningful images (skip tiny logos/icons and repeats), give each a public URL,\n// and put that URL into the text where the image was. The URLs are predictable, so the\n// text can be finished now; the actual upload happens on a side branch.\nconst PUBLIC_BASE = 'http://localhost:8000/storage/v1/object/public/document-images/'; // change for production\nconst MIN_SIDE = 80, MIN_AREA = 150 * 150;\n\nreturn $input.all().map((item, i) => {\n  const f = item.json;\n  const seen = new Set();\n  const uploads = [];\n\n  const pageTexts = (f.pages ?? []).map(page => {\n    let md = page.markdown ?? '';\n    for (const img of page.images ?? []) {\n      const w = (img.bottom_right_x ?? 0) - (img.top_left_x ?? 0);\n      const h = (img.bottom_right_y ?? 0) - (img.top_left_y ?? 0);\n      const b64 = String(img.image_base64 ?? '').replace(/^data:[^,]+,/, '');\n      const key = b64.length + ':' + b64.slice(0, 200) + b64.slice(-200);   // cheap fingerprint\n      const placeholder = `![${img.id}](${img.id})`;\n      const tooSmall = w < MIN_SIDE || h < MIN_SIDE || w * h < MIN_AREA;\n\n      if (!b64 || tooSmall || seen.has(key)) {           // drop it from the text\n        md = md.split(placeholder).join('');\n        continue;\n      }\n      seen.add(key);\n      const path = `${f.file_id}/p${page.index + 1}-${img.id}`;\n      uploads.push({ path, b64, mime: img.id.endsWith('.png') ? 'image/png' : 'image/jpeg' });\n      let desc = '';\n      try { desc = JSON.parse(img.image_annotation ?? '{}').description ?? ''; } catch (e) { desc = String(img.image_annotation ?? ''); }\n      const alt = (desc || `Image from ${f.file_name}`).replace(/[\\[\\]\\n]/g, ' ').trim();\n      md = md.split(placeholder).join(`![${alt}](${PUBLIC_BASE}${path})\\n*Image, page ${page.index + 1}: ${alt}*`);\n    }\n    return md;\n  });\n\n  const { pages, ...rest } = f;                          // drop raw OCR pages (large) from here on\n  return { json: { ...rest, markdown: pageTexts.join('\\n\\n'), uploads, images_kept: uploads.length },\n           pairedItem: { item: i } };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        48,
+        2720
+      ],
+      "id": "38d4248e-a4b5-4465-a879-32149a09d730",
+      "name": "Link images in text"
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per image to upload (may be zero — that's fine, this side branch just ends).\nconst out = [];\n$input.all().forEach((item, i) => {\n  for (const u of item.json.uploads ?? []) {\n    out.push({ json: { path: u.path, b64: u.b64, mime: u.mime }, pairedItem: { item: i } });\n  }\n});\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        2720
+      ],
+      "id": "a593d65c-9eaf-49e0-8122-74ced19dfdf3",
+      "name": "One item per image"
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "b64",
+        "options": {
+          "mimeType": "={{ $json.mime }}"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        528,
+        2720
+      ],
+      "id": "2aed0cc8-5729-4000-8689-3de39d0987bf",
+      "name": "Image to file"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://host.docker.internal:8000/storage/v1/object/document-images/{{ $('One item per image').item.json.path }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-upsert",
+              "value": "true"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        768,
+        2720
+      ],
+      "id": "2716ac5d-e597-40b6-8a36-572cf6e08a54",
+      "name": "Upload image",
+      "credentials": {
+        "supabaseApi": {
+          "name": "Supabase API – RAG"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Split the document into blocks (paragraphs, tables, lists stay whole because they have no blank lines\n// inside) and number them, so the model can say \"cut after block 41\" instead of rewriting text.\nconst MAX_BLOCK = 4000;   // very long blocks (logs, huge tables) are split on line breaks so they can still be chunked\nconst blocks = [];\nfor (const b of $input.item.json.markdown.split(/\\n\\s*\\n/).map(b => b.trim()).filter(Boolean)) {\n  if (b.length <= MAX_BLOCK) { blocks.push(b); continue; }\n  let cur = '';\n  for (const line of b.split('\\n')) {\n    if (cur && cur.length + line.length + 1 > MAX_BLOCK) { blocks.push(cur); cur = ''; }\n    cur = cur ? cur + '\\n' + line : line;\n  }\n  if (cur) blocks.push(cur);\n}\nconst numbered = blocks.map((b, n) => `[${n}] ${b}`).join('\\n\\n');\n\nconst prompt = `You split a document into chunks for a search system. The document is given as numbered blocks [n].\nReturn ONLY json in this exact shape: {\"chunks\":[{\"start\":0,\"end\":12,\"title\":\"short section title\"}]}\n\nRules:\n- Cover every block exactly once, in order: the first chunk starts at 0, each chunk starts right after the previous one ends, the last chunk ends at ${blocks.length - 1}.\n- Cut where the topic changes. Never separate a heading from the section beneath it. Keep numbered or bulleted lists, tables and step-by-step procedures intact. Keep an argument together with its conclusion.\n- Aim for 500–2,000 tokens per chunk (about 2,000–8,000 characters). Never exceed about 10,000 characters.\n\nDocument: ${$input.item.json.file_name}\n\n${numbered}`;\n\nreturn { json: { ...$input.item.json, blocks, prompt } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        2752
+      ],
+      "id": "7634d27f-2952-4efa-a66c-a0da8d41fe70",
+      "name": "Number blocks"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        2080,
+        2752
+      ],
+      "id": "7a6799a4-47ed-4f26-b688-ad184bb3acef",
+      "name": "Find chunk boundaries"
+    },
+    {
+      "parameters": {
+        "project": "Azure AI – RAG",
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-5.4-mini"
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "timeout": 300000,
+          "maxRetries": 2,
+          "extraBody": "{\"reasoning_effort\": \"low\"}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1.1,
+      "position": [
+        2080,
+        2944
+      ],
+      "id": "c9a4007b-5ebb-4dd8-9779-779029d72edf",
+      "name": "Find chunk boundaries1",
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn the model's cut points into actual chunks of the ORIGINAL text. If the answer is unusable,\n// fall back to size-based cutting at block boundaries — a file is never lost to a bad JSON reply.\nconst MAX_CHARS = 10000, TARGET = 6000;\nconst out = [];\n\n$input.all().forEach((item, i) => {\n  const doc = $('Number blocks').itemMatching(i).json;\n  const blocks = doc.blocks;\n  let ranges = [];\n  // n8n's LLM node already parses JSON replies into fields ({ chunks: [...] });\n  // older versions return the raw text instead — accept both.\n  let parsed = item.json;\n  if (!Array.isArray(parsed.chunks)) {\n    try { parsed = JSON.parse(item.json.text ?? item.json.response ?? '{}'); } catch (e) { parsed = {}; }\n  }\n  // The model's real decision is WHERE each section starts. Use its start points as cut\n  // positions and rebuild contiguous ranges — small slips (an overlap, an end past the last\n  // block) get repaired instead of throwing away a good plan.\n  const last = blocks.length - 1;\n  const starts = [...new Set([0, ...(parsed.chunks ?? [])\n      .map(c => Math.round(Number(c.start)))\n      .filter(s => Number.isFinite(s) && s >= 0 && s <= last)])].sort((a, b) => a - b);\n  const valid = (parsed.chunks ?? []).length > 0;\n  ranges = starts.map((s, k) => [s, k + 1 < starts.length ? starts[k + 1] - 1 : last]);\n  if (!valid) {                                         // fallback: pack blocks up to ~TARGET chars\n    ranges = []; let s = 0, size = 0;\n    blocks.forEach((b, n) => {\n      if (size > 0 && size + b.length > TARGET) { ranges.push([s, n - 1]); s = n; size = 0; }\n      size += b.length;\n    });\n    ranges.push([s, blocks.length - 1]);\n  }\n\n  // Enforce the episode's ~2,500-token ceiling: split any oversized chunk at block boundaries\n  const pieces = [];\n  for (const [s, e] of ranges) {\n    let cur = [];\n    for (let n = s; n <= e; n++) {\n      if (cur.length && (cur.join('\\n\\n') + blocks[n]).length > MAX_CHARS) { pieces.push(cur); cur = []; }\n      cur.push(blocks[n]);\n    }\n    if (cur.length) pieces.push(cur);\n  }\n\n  // Merge undersized neighbours (e.g. a one-page agenda cut into five tiny pieces) up to ~TARGET,\n  // so every chunk carries enough context to be useful on its own.\n  const MIN_CHARS = 1500;\n  const size = a => a.join('\\n\\n').length;\n  const merged = [];\n  for (const p of pieces) {\n    const prev = merged[merged.length - 1];\n    if (prev && (size(prev) < MIN_CHARS || size(p) < MIN_CHARS) && size(prev) + size(p) + 2 <= TARGET) prev.push(...p);\n    else merged.push([...p]);\n  }\n\n  const { blocks: _b, prompt: _p, markdown: _m, uploads: _u, ...file } = doc;\n  merged.forEach((p, k) => out.push({\n    json: { ...file, chunk_index: k, chunk_count: merged.length, plan: valid ? 'agentic' : 'fallback',\n            content: p.join('\\n\\n') },\n    pairedItem: { item: i },\n  }));\n});\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        2752
+      ],
+      "id": "40a70cea-b537-4c7e-ae15-e7a84e9c82ad",
+      "name": "Cut chunks"
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "tableName": {
+          "__rl": true,
+          "value": "documents",
+          "mode": "list",
+          "cachedResultName": "documents"
+        },
+        "options": {
+          "queryName": "match_documents"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        2560,
+        2752
+      ],
+      "id": "9a549ada-9737-41ae-849e-b1478dcf2ad3",
+      "name": "Supabase Vector Store",
+      "credentials": {
+        "supabaseApi": {
+          "name": "Supabase API – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        2560,
+        2944
+      ],
+      "id": "7c645b17-7d72-4316-87ff-e097d134b950",
+      "name": "Embeddings Azure OpenAI",
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.content }}",
+        "textSplittingMode": "custom",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "file_id",
+                "value": "={{ $json.file_id }}"
+              },
+              {
+                "name": "file_name",
+                "value": "={{ $json.file_name }}"
+              },
+              {
+                "name": "chunk_index",
+                "value": "={{ $json.chunk_index }}"
+              }
+            ]
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        2800,
+        2944
+      ],
+      "id": "7a9d1fee-0698-45c0-a5cc-bd21801fc3dd",
+      "name": "Default Data Loader"
+    },
+    {
+      "parameters": {
+        "chunkSize": 12000,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        2800,
+        3136
+      ],
+      "id": "6ac7819a-9ce6-44de-a2a3-c3ef4554bb1e",
+      "name": "Recursive Character Text Splitter"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Back to one item per FILE with its chunk count, for the catalog card + log.\nconst files = new Map();\nfor (const { json } of $('Cut chunks').all()) {\n  if (!files.has(json.file_id)) files.set(json.file_id, { ...json, content: undefined });\n}\nreturn [...files.values()].map(f => ({ json: f }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        2752
+      ],
+      "id": "f8445366-c80f-41ee-bc20-69db34e14033",
+      "name": "One result per file (chunks)"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with log as (\n  insert into ingestion_log (file_id, file_name, step, status, chunk_count, message)\n  values ($1, $2, 'vector_write', 'ok', $5::int, $6)\n)\ninsert into document_metadata (file_id, file_name, last_modified, content_hash)\nvalues ($1, $2, $3::timestamptz, $4)\non conflict (file_id) do update\n  set file_name = excluded.file_name, last_modified = excluded.last_modified,\n      content_hash = excluded.content_hash, updated_at = now();",
+        "options": {
+          "queryReplacement": "={{ [$json.file_id, $json.file_name, $json.last_modified, $json.content_hash, $json.chunk_count, ($json.plan === 'fallback' ? 'size-based chunking fallback' : 'agentic chunking') + ', ' + $json.images_kept + ' images'] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        3040,
+        2752
+      ],
+      "id": "4dd540b9-06a4-4d77-b39b-c8aa16287fb6",
+      "name": "Mark document processed",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "http://host.docker.internal:8000/storage/v1/object/document-images",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ prefixes: $json.old_images ?? [] }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "c1ab8a26-12b4-442d-b417-907d17f97458",
+      "name": "Delete old images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        528,
+        1120
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "name": "Supabase API – RAG"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// The storage call's response replaced the item; carry the file ID on to the download.\nreturn { json: $('Clear old chunks & rows').item.json };"
+      },
+      "id": "ab001c7e-8fb5-4519-85c0-d7ecea4946cf",
+      "name": "Keep file ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "http://host.docker.internal:8000/storage/v1/object/document-images",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ prefixes: $json.old_images ?? [] }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "b5cea871-2e02-477f-a6cb-d30176b8045f",
+      "name": "Delete images of deleted file",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3760,
+        608
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "name": "Supabase API – RAG"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// The upload step continues on error so one bad image can't block a document — which also\n// means failures are silent. Count them per file and log them (the episode's \"success that isn't\").\nconst byFile = new Map();\n$input.all().forEach((item, i) => {\n  if (!item.json.error) return;\n  const fileId = $('One item per image').itemMatching(i).json.path.split('/')[0];\n  byFile.set(fileId, (byFile.get(fileId) ?? 0) + 1);\n});\nreturn [...byFile].map(([file_id, n]) => ({ json: { file_id, message: `${n} image upload(s) failed` } }));"
+      },
+      "id": "c8d5c358-5c8e-4143-996b-974972364f63",
+      "name": "Count failed uploads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        2720
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into ingestion_log (file_id, file_name, step, status, message)\nvalues ($1, (select file_name from document_metadata where file_id = $1), 'image_upload', 'failed', $2);",
+        "options": {
+          "queryReplacement": "={{ [$json.file_id, $json.message] }}"
+        }
+      },
+      "id": "eebd370a-b5b2-4376-b8a4-43c50c8bfb0f",
+      "name": "Log failed uploads",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1248,
+        2720
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// .log / .txt / .md need no OCR: read the text and hand it to chunking in the same shape\n// the OCR path produces (no images).\nconst out = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const text = (await this.helpers.getBinaryDataBuffer(i, 'data')).toString('utf8');\n  out.push({ json: { ...items[i].json, markdown: text, uploads: [], images_kept: 0 }, pairedItem: { item: i } });\n}\nreturn out;"
+      },
+      "id": "0501c2bc-2ea9-4dbb-a399-f187b30d8395",
+      "name": "Text file as document",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        2752
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Two runs at once would process the same files (double OCR cost, possible duplicate chunks).\n-- Count OTHER ingestion runs still going (ignore anything older than 2 h: a crash, not a run).\nselect count(*)::int as others\nfrom execution_entity\nwhere \"workflowId\" = 'GwkCOkOcb9EAOX9e' and status = 'running'\n  and id::text <> '{{ $execution.id }}'\n  and \"startedAt\" > now() - interval '2 hours';",
+        "options": {}
+      },
+      "id": "63b26bd3-3ade-4dc9-bec5-abc257459418",
+      "name": "Another run in progress?",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        880,
+        176
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "n8n internal DB (run checks)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "219ac323-e695-4e69-b47f-4f2e3abcd184",
+              "leftValue": "={{ $json.others }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        1120,
+        176
+      ],
+      "id": "6a4a046b-b4e8-4624-98d0-890c1d4dd968",
+      "name": "Only if no other run"
+    },
+    {
+      "parameters": {
+        "content": "# RAG – Ingestion\nKeeps the knowledge base in step with the SharePoint library. Every 15 minutes it compares SharePoint with what is already stored, then processes up to 10 new or changed files.\n\n**Documents:** OCR → images → sections → vectors\n**Spreadsheets:** rows into a SQL table\n**Deleted files:** forgotten everywhere\n\n**Writes to:** Supabase tables `documents`, `document_rows`, `document_metadata`, `ingestion_log` + the image bucket.\n**How to watch it:** the `ingestion_log` table and the 8 AM Telegram message. Successful runs are not kept in n8n's Executions list (only failures are).",
+        "height": 360,
+        "width": 520,
+        "color": 7
+      },
+      "id": "f25b0163-505f-4901-a196-bfbd8425af04",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ① Start & safety check\nThe 15-minute schedule (or the manual button) starts a run.\n\nFirst it asks n8n's own database whether another ingestion run is still going. If so, this run stops — two runs at once would process the same files (double cost, duplicate passages).",
+        "height": 571,
+        "width": 760,
+        "color": 7
+      },
+      "id": "1cd62048-62fd-4548-91bb-305d242b205e",
+      "name": "① Start & safety check",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        592,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② What's in SharePoint right now\nTwo views of the same folder, joined by file name (the episode's dual-path design):\n- **Graph** → each file's permanent ID + content fingerprint\n- **SharePoint node** → last-modified time\n\nNames are URL-decoded (%20 → space) so both sides match. `OLD_` and \"Do Not Use\" files are dropped here, so they count as absent — and are forgotten if they were indexed before.",
+        "height": 593,
+        "width": 1480,
+        "color": 5
+      },
+      "id": "caf0538c-1722-4843-afdf-2d84e4f1ae48",
+      "name": "② What is in SharePoint now",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1424,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ What changed since last run\nCompares SharePoint now with `document_metadata` — the system's memory of what it has processed.\n- **new / updated** → processed in the next sections\n- **touch** (tags or date changed, same content) → only the date is updated, no re-OCR\n- **deleted** → its passages, rows and images are removed: the AI forgets it\n\nNothing changed → the run ends here.",
+        "height": 805,
+        "width": 1000,
+        "color": 6
+      },
+      "id": "20acc431-7fb9-42d7-a3b2-3a4e89d0d771",
+      "name": "③ What changed since last run",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2992,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ④ Pick a batch & download\nTakes up to 10 files per run (a backlog clears over several runs).\n\nFor each file: clear any old passages, rows and images first (so reprocessing never creates duplicates) → download it from Graph by its file ID → route by type: **spreadsheet** · **text** · **document / image** · **unsupported** (logged and skipped, e.g. .mp4, .zip).",
+        "height": 571,
+        "width": 1720,
+        "color": 5
+      },
+      "id": "8a131cd8-aa09-491a-8e46-123cef07a544",
+      "name": "④ Pick a batch and download",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⑤ Spreadsheets → SQL table\nExcel/CSV rows are stored as they are (one JSON record per row) in `document_rows` — not cut up or embedded.\n\nThat lets the agent answer number questions with SQL instead of doing arithmetic itself. Empty sheets are recorded as `empty` so they aren't retried.",
+        "height": 359,
+        "width": 1240,
+        "color": 4
+      },
+      "id": "a9f1edb7-89c3-4906-af6c-c758209cee98",
+      "name": "⑤ Spreadsheets to SQL",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1792,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⑥ Prepare documents for OCR\nAzure's OCR takes at most 30 pages / 30 MB per request.\n\n**Gotenberg** (a document-conversion container) converts Word and PowerPoint to PDF (images at 150 dpi — smaller and reads better) and splits every PDF into **10-page parts**. Images go through as one part. Upload names are made safe — an apostrophe in a file name once broke conversion.",
+        "height": 571,
+        "width": 1960
+      },
+      "id": "447e73c3-9cc5-430b-80ac-1d0700fa5eae",
+      "name": "⑥ Prepare documents for OCR",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        1664
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⑦ Read the pages — Mistral OCR on Azure (US)\nEach part goes to Mistral Document AI, paced one every 7 seconds (limit: 10 a minute). It returns the text as markdown plus a **description of every image**.\n\nParts are checked and joined back into one document in page order. All-or-nothing: a temporary error → **retry** next run; a broken file → **failed** and skipped until someone edits it.",
+        "height": 761,
+        "width": 1240,
+        "color": 4
+      },
+      "id": "af480a27-2464-4fb6-b14f-2963a35d3a2f",
+      "name": "⑦ Read the pages (OCR)",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2032,
+        1664
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⑧ Images → Supabase Storage\nSkips tiny and repeated images (logos, icons), uploads the rest to the `document-images` bucket, and puts each image's link and description into the text exactly where it appeared.\n\nThat's how answers can show screenshots under the right step. Failed uploads are counted and logged.",
+        "height": 359,
+        "width": 1480,
+        "color": 2
+      },
+      "id": "99d566bc-0190-4a6d-a0ca-668d952b2d20",
+      "name": "⑧ Images to storage",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        2560
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⑨ Cut into sections, embed, store\n**GPT-5.4 mini** reads each document as numbered blocks and returns only the cut points (sections of about 500–2,000 tokens); code then cuts the original text, so nothing is reworded.\n\nEach passage is embedded (**text-embedding-3-small**, 1,536 numbers for its meaning) and saved to `documents` with its label: file ID, file name, position. Last: the file is marked processed in `document_metadata`.\n\n(Text files such as .log join here directly — no OCR needed.)",
+        "height": 774,
+        "width": 1720,
+        "color": 4
+      },
+      "id": "fe7e8393-6772-492a-929e-71e323b711c2",
+      "name": "⑨ Cut, embed, store",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1552,
+        2560
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Another run in progress?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Graph – list folder": {
+      "main": [
+        [
+          {
+            "node": "One item per file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per file": {
+      "main": [
+        [
+          {
+            "node": "Files only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Another run in progress?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Files only": {
+      "main": [
+        [
+          {
+            "node": "Decode names (Graph)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SharePoint – get timestamps": {
+      "main": [
+        [
+          {
+            "node": "Decode names (SharePoint)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decode names (SharePoint)": {
+      "main": [
+        [
+          {
+            "node": "Merge on file name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decode names (Graph)": {
+      "main": [
+        [
+          {
+            "node": "Merge on file name",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge on file name": {
+      "main": [
+        [
+          {
+            "node": "Skip outdated files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read document_metadata": {
+      "main": [
+        [
+          {
+            "node": "Compare: what changed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare: what changed?": {
+      "main": [
+        [
+          {
+            "node": "Route by action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by action": {
+      "main": [
+        [
+          {
+            "node": "Batch: 10 files per run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Batch: 10 files per run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update timestamp only",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Forget deleted file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Graph – download file": {
+      "main": [
+        [
+          {
+            "node": "Attach file info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach file info": {
+      "main": [
+        [
+          {
+            "node": "Route by file type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by file type": {
+      "main": [
+        [
+          {
+            "node": "Read spreadsheet rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Text file as document",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Image or document?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read spreadsheet rows": {
+      "main": [
+        [
+          {
+            "node": "Shape rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape rows": {
+      "main": [
+        [
+          {
+            "node": "Write rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write rows": {
+      "main": [
+        [
+          {
+            "node": "One result per file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One result per file": {
+      "main": [
+        [
+          {
+            "node": "Mark spreadsheet processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build OCR request": {
+      "main": [
+        [
+          {
+            "node": "Mistral OCR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip outdated files": {
+      "main": [
+        [
+          {
+            "node": "Read document_metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mistral OCR": {
+      "main": [
+        [
+          {
+            "node": "Validate OCR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate OCR": {
+      "main": [
+        [
+          {
+            "node": "Join parts per file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route OCR result": {
+      "main": [
+        [
+          {
+            "node": "Link images in text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log OCR retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark OCR failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image or document?": {
+      "main": [
+        [
+          {
+            "node": "Image: one part",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Safe file name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Office or PDF?": {
+      "main": [
+        [
+          {
+            "node": "Gotenberg: convert to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gotenberg: split every 10 pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gotenberg: convert to PDF": {
+      "main": [
+        [
+          {
+            "node": "Gotenberg: split every 10 pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zip or single PDF?": {
+      "main": [
+        [
+          {
+            "node": "Unzip parts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Document parts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unzip parts": {
+      "main": [
+        [
+          {
+            "node": "Document parts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image: one part": {
+      "main": [
+        [
+          {
+            "node": "Build OCR request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Document parts": {
+      "main": [
+        [
+          {
+            "node": "Build OCR request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Join parts per file": {
+      "main": [
+        [
+          {
+            "node": "Route OCR result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safe file name": {
+      "main": [
+        [
+          {
+            "node": "Office or PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Link images in text": {
+      "main": [
+        [
+          {
+            "node": "One item per image",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Number blocks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per image": {
+      "main": [
+        [
+          {
+            "node": "Image to file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image to file": {
+      "main": [
+        [
+          {
+            "node": "Upload image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Number blocks": {
+      "main": [
+        [
+          {
+            "node": "Find chunk boundaries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find chunk boundaries1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Find chunk boundaries",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find chunk boundaries": {
+      "main": [
+        [
+          {
+            "node": "Cut chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cut chunks": {
+      "main": [
+        [
+          {
+            "node": "Supabase Vector Store",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Azure OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Supabase Vector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Default Data Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Supabase Vector Store",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recursive Character Text Splitter": {
+      "ai_textSplitter": [
+        [
+          {
+            "node": "Default Data Loader",
+            "type": "ai_textSplitter",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase Vector Store": {
+      "main": [
+        [
+          {
+            "node": "One result per file (chunks)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One result per file (chunks)": {
+      "main": [
+        [
+          {
+            "node": "Mark document processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear old chunks & rows": {
+      "main": [
+        [
+          {
+            "node": "Delete old images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete old images": {
+      "main": [
+        [
+          {
+            "node": "Keep file ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep file ID": {
+      "main": [
+        [
+          {
+            "node": "Graph – download file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Forget deleted file": {
+      "main": [
+        [
+          {
+            "node": "Delete images of deleted file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload image": {
+      "main": [
+        [
+          {
+            "node": "Count failed uploads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count failed uploads": {
+      "main": [
+        [
+          {
+            "node": "Log failed uploads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text file as document": {
+      "main": [
+        [
+          {
+            "node": "Number blocks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch: 10 files per run": {
+      "main": [
+        [
+          {
+            "node": "Clear old chunks & rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gotenberg: split every 10 pages": {
+      "main": [
+        [
+          {
+            "node": "Zip or single PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Another run in progress?": {
+      "main": [
+        [
+          {
+            "node": "Only if no other run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Only if no other run": {
+      "main": [
+        [
+          {
+            "node": "Graph – list folder",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "SharePoint – get timestamps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": false
+  },
+  "active": false
+}

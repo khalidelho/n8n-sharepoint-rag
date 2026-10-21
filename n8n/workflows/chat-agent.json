@@ -1,0 +1,477 @@
+{
+  "id": "zWAl3yeuiJPsldXV",
+  "name": "RAG – Chat agent",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.5,
+      "position": [
+        40,
+        215
+      ],
+      "id": "494cb7bd-20b5-440d-9862-4b9c84d2040c",
+      "name": "When chat message received",
+      "webhookId": "2bbb36ff-7915-5579-8c49-ebb10c311374"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are the assistant for a company knowledge base: manuals, SOPs,\ntraining decks, checklists, reports and spreadsheets. You answer ONLY from these documents.\n\nHow to work — follow these rules every time:\n1. ALWAYS Start with search_documents unless the answer is already fully contained in this conversation's earlier tool results.\n2. If the passages returned are not enough to answer, look at their metadata, choose the most\n   relevant file, and call get_full_document with its file_id. Do not answer from partial passages\n   when the full document would settle it.\n3. If the question needs ANY calculation, total, average, count, filter or comparison across\n   spreadsheet rows, you MUST use query_spreadsheets. Never do arithmetic yourself.\n   First find the right sheet and its column names with SQL, then compute the answer with SQL.\n4. Passages may contain screenshots and diagrams written as ![description](url).\n   When you explain steps, a procedure, a screen, a form or a diagram, and a passage has an image of it,\n   you MUST include that image — copy the markdown exactly, URL unchanged — directly under the step it\n   illustrates. Never collect images at the end, and never invent image URLs.\n5. Cite each source file once per section (or once at the end, if the whole answer comes from one file), e.g. (Source: Safety Manual.pdf).\"\n6. If the tools do not return enough information, say plainly that the answer is not in the\n   documents. Do not guess, do not fill gaps, and do not blend in content from unrelated files.\n\nAnswer in clear, concise Markdown.\n",
+          "maxIterations": 8
+        },
+        "promptType": "define",
+        "text": "={{ $json.chatInput }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        880,
+        237
+      ],
+      "id": "b92c62c3-08d5-48c3-97ef-f4e1c34bf240",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-5.4-mini",
+          "mode": "id"
+        },
+        "options": {
+          "timeout": 120000,
+          "maxRetries": 2,
+          "extraBody": "{\"reasoning_effort\": \"low\"}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        427
+      ],
+      "id": "e0280db9-f04f-4ae4-a7a5-399f61cae8c8",
+      "name": "Azure AI Foundry Chat Model",
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "contextWindowLength": 10,
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.sessionId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.4,
+      "position": [
+        1120,
+        427
+      ],
+      "id": "867de32d-7942-47bc-85f1-6d8918cf1533",
+      "name": "Postgres Chat Memory",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Semantic search over the knowledge base. Input: a natural-language search query.\nReturns the most relevant passages. Each has metadata.file_name (cite it) and\nmetadata.file_id (use it with get_full_document).\n",
+        "tableName": {
+          "__rl": true,
+          "value": "documents",
+          "mode": "list",
+          "cachedResultName": "documents"
+        },
+        "options": {
+          "queryName": "match_documents"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        2320,
+        158
+      ],
+      "id": "ebb12df9-b0dc-4e0a-a60e-28c7e513de6a",
+      "name": "search_documents_A",
+      "credentials": {
+        "supabaseApi": {
+          "name": "Supabase API – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        2320,
+        348
+      ],
+      "id": "31eb412f-7345-4bce-b619-fdf9d273746d",
+      "name": "Embeddings Azure OpenAI",
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Returns the complete text of ONE document, in its original order, by file_id.\nUse when search_documents found the right document but its passages are not enough.\nVery long documents are cut at 80,000 characters.",
+        "operation": "executeQuery",
+        "query": "select metadata->>'file_name' as file_name,\n       left(string_agg(content, E'\\n\\n' order by (metadata->>'chunk_index')::int), 80000) as full_text\nfrom documents\nwhere metadata->>'file_id' = $1\ngroup by metadata->>'file_name';",
+        "options": {
+          "queryReplacement": "={{ [ $fromAI('file_id', 'The file_id of the document, from metadata.file_id in a search_documents result', 'string') ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.7,
+      "position": [
+        1720,
+        237
+      ],
+      "id": "d65f3798-9d3e-4542-a39f-d74e221a0374",
+      "name": "get_full_document",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – read-only (agent)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Runs ONE read-only PostgreSQL SELECT on the table document_rows (spreadsheet data):\n  file_id text, file_name text, row_data jsonb   -- one row per spreadsheet row; the keys of row_data are the column headers\nTips: list sheets:   select file_name, count(*) from document_rows group by 1;\n      see columns:   select distinct jsonb_object_keys(row_data) from document_rows where file_name ilike '%name%';\n      read a value:  row_data->>'Column Name'      numbers: (row_data->>'Column Name')::numeric\nAlways add LIMIT 200 when returning rows.",
+        "operation": "executeQuery",
+        "query": "{{$fromAI('sql', 'One PostgreSQL SELECT statement over document_rows', 'string')}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.7,
+      "position": [
+        1960,
+        237
+      ],
+      "id": "6a0cdea2-9efe-4618-babe-1107dea2784e",
+      "name": "query_spreadsheets",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – read-only (agent)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "description": "Semantic search over the knowledge base. Input: a natural-language search query.\nReturns the most relevant passages. Each has metadata.file_name (cite it) and\nmetadata.file_id (use it with get_full_document).\n",
+        "workflowId": {
+          "__rl": true,
+          "value": "ragSearchRerank1",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ragSearchRerank1",
+          "cachedResultName": "RAG – Search (reranked)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', 'A natural-language search query', 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "219618ae-6481-4e57-8780-aa9964de5d7a",
+      "name": "search_documents",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        237
+      ]
+    },
+    {
+      "id": "40ef5369-0419-46db-94a6-4713de02bbbb",
+      "name": "Open WebUI webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        40,
+        405
+      ],
+      "webhookId": "b4dc9451-1667-5f02-adbe-76ea3a09df0b",
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "RAG webhook token"
+        }
+      },
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rag-chat",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "responseData": "firstEntryJson",
+        "options": {}
+      }
+    },
+    {
+      "id": "9095557b-f1d0-4f67-87b5-0bbcf8055d12",
+      "name": "Normalize webhook input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        280,
+        405
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "040a8948-d9f1-4134-b7c0-3bf0342cb0f9",
+              "name": "chatInput",
+              "value": "={{ $json.body.chatInput }}",
+              "type": "string"
+            },
+            {
+              "id": "3f30eada-b92b-4d38-a9f0-22aeefc2f94a",
+              "name": "sessionId",
+              "value": "={{ $json.body.sessionId }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      }
+    },
+    {
+      "id": "f4cf2ac5-89b3-4bae-9d57-3b56bcab508f",
+      "name": "Log usage (no text)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        520,
+        405
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      },
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- One row per question: when + pseudonymous person/chat hashes. Never the question text.\ninsert into usage_log (user_hash, chat_hash) values ($1, $2)\nreturning $3::text as \"chatInput\", $4::text as \"sessionId\";",
+        "options": {
+          "queryReplacement": "={{ [ $json.sessionId.split(':')[0].hash('sha256').slice(0, 16), $json.sessionId.hash('sha256').slice(0, 16), $json.chatInput, $json.sessionId ] }}"
+        }
+      }
+    },
+    {
+      "id": "551d99cf-c154-4b2c-9f50-0e6d9ee10972",
+      "name": "① How questions arrive",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        0
+      ],
+      "parameters": {
+        "content": "## ① How questions arrive\nTwo doors into the same agent:\n- the **n8n test chat** (for building and testing)\n- the **Open WebUI webhook** (`POST /webhook/rag-chat`, requires the secret token)\n\nWebhook input is normalised to `{chatInput, sessionId}` (session = person:chat). Then one usage row is logged: the time plus hashed person and chat IDs — **never the question text**.",
+        "height": 615,
+        "width": 760,
+        "color": 5
+      }
+    },
+    {
+      "id": "dd6fe1e9-8de9-4b7e-9b07-63eed7adec82",
+      "name": "② The agent",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        820,
+        0
+      ],
+      "parameters": {
+        "content": "## ② The agent — GPT-5.4 mini\nFollows the six rules in its system message: always search first · read the full document when passages aren't enough · SQL for any math · screenshots inline · cite the file · say so when the answer isn't in the documents.\n\n**Memory:** the last 10 messages of this chat, stored in Supabase `n8n_chat_histories` and deleted after 90 days.",
+        "height": 637,
+        "width": 520,
+        "color": 4
+      }
+    },
+    {
+      "id": "ad693b11-c442-44c4-86b4-df433a555d91",
+      "name": "③ The tools",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        0
+      ],
+      "parameters": {
+        "content": "## ③ The agent's tools — it decides which to use\n- **search_documents** → sub-workflow *RAG – Search (reranked)*: 25 passages by meaning, GPT keeps the best 4\n- **get_full_document** → every passage of one file, in order\n- **query_spreadsheets** → SQL the agent writes itself on `document_rows`\n\nBoth database tools use a **read-only** login: they can't change anything, and queries stop after 15 seconds.",
+        "height": 447,
+        "width": 760,
+        "color": 6
+      }
+    },
+    {
+      "id": "474fb324-265f-47ad-9ee5-828802801c5e",
+      "name": "④ Kept for comparison",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2260,
+        0
+      ],
+      "parameters": {
+        "content": "## ④ Not in use — kept for comparison\nThe original plain vector search (top 4, no reranking). Disconnected after the A-vs-B test showed reranking finds better passages. Safe to delete.",
+        "height": 558,
+        "width": 520,
+        "color": 7
+      }
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure AI Foundry Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Azure OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "search_documents_A",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_full_document": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "query_spreadsheets": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_documents": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open WebUI webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize webhook input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize webhook input": {
+      "main": [
+        [
+          {
+            "node": "Log usage (no text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log usage (no text)": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "active": false
+}

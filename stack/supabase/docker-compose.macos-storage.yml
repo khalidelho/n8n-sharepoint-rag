@@ -1,0 +1,16 @@
+# macOS fix: Supabase Storage keeps each file's metadata in
+# extended attributes (xattrs). Docker Desktop's bind mounts of Mac folders don't support xattrs,
+# so every upload failed with "The file system does not support extended attributes".
+# A Docker named volume lives inside Docker's Linux VM (ext4), which does.
+# Not needed on a Linux server — there the default ./volumes/storage bind mount works.
+# Enabled via: sh run.sh config add macos-storage   (adds this file to COMPOSE_FILE in .env)
+services:
+  storage:
+    volumes:
+      - storage-data:/var/lib/storage
+  imgproxy:
+    volumes:
+      - storage-data:/var/lib/storage
+
+volumes:
+  storage-data:

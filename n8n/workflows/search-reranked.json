@@ -1,0 +1,231 @@
+{
+  "id": "ragSearchRerank1",
+  "name": "RAG – Search (reranked)",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "query"
+            }
+          ]
+        }
+      },
+      "id": "b490684a-8b07-4dd2-a42a-e167e24ff8bb",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        40,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "load",
+        "tableName": {
+          "__rl": true,
+          "value": "documents",
+          "mode": "list",
+          "cachedResultName": "documents"
+        },
+        "prompt": "={{ $json.query }}",
+        "topK": 25,
+        "options": {
+          "queryName": "match_documents"
+        }
+      },
+      "id": "3c61df52-a0a0-4b4e-96ff-cfe74c497446",
+      "name": "Vector search (25 candidates)",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        280,
+        250
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "name": "Supabase API – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "id": "d3d516dc-0e32-4ae2-8e84-6e27342e23e9",
+      "name": "Embeddings Azure OpenAI",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        280,
+        440
+      ],
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// The 25 passages closest in MEANING to the query — now let GPT judge which actually ANSWER it.\nconst query = $('When Executed by Another Workflow').first().json.query;\nconst passages = $input.all().map((it, i) => ({\n  i,\n  file_name: it.json.document?.metadata?.file_name,\n  file_id: it.json.document?.metadata?.file_id,\n  chunk_index: it.json.document?.metadata?.chunk_index,\n  similarity: it.json.score,\n  content: it.json.document?.pageContent ?? '',\n}));\n\n// Show GPT the first 3,000 characters of each passage (headings + opening are enough to judge relevance)\nconst listing = passages.map(p => `[${p.i}] (${p.file_name})\\n${p.content.slice(0, 3000)}`).join('\\n\\n---\\n\\n');\n\nconst prompt = `You are ranking search results for a question.\nQuestion: ${query}\n\nBelow are ${passages.length} passages, numbered [n]. Choose up to 4 that most DIRECTLY help answer the question, best first.\nPrefer passages containing the actual answer (steps, values, definitions, requirements) over passages that are only on a similar topic.\nReturn ONLY json: {\"best\": [n, n, ...]}. If none of them helps answer the question, return {\"best\": []}.\n\n${listing}`;\n\nreturn [{ json: { prompt, passages } }];"
+      },
+      "id": "0e6b3605-d60a-48df-9016-2d60dba42a33",
+      "name": "Build rerank prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "batching": {}
+      },
+      "id": "eb9f94b8-d378-4463-b493-a4e5ae9165f7",
+      "name": "Rerank with GPT",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        760,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-5.4-mini",
+          "mode": "id"
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "timeout": 60000,
+          "maxRetries": 2,
+          "extraBody": "{\"reasoning_effort\": \"low\"}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1.1,
+      "position": [
+        760,
+        440
+      ],
+      "id": "bf83682c-2455-4e3c-9d37-52f0395d3ba6",
+      "name": "GPT reranker model",
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn GPT's choice into the tool's answer. If its reply is unusable, fall back to plain vector order —\n// a search must never fail just because the reranker did.\nconst { passages } = $('Build rerank prompt').first().json;\nconst reply = $input.first().json;\n\nlet parsed = reply;                                         // n8n usually parses JSON replies already…\nif (!Array.isArray(parsed.best)) {                          // …older versions give raw text\n  try { parsed = JSON.parse(reply.text ?? reply.response ?? '{}'); } catch (e) { parsed = {}; }\n}\nlet best = Array.isArray(parsed.best)\n  ? parsed.best.map(Number).filter(n => Number.isInteger(n) && passages[n])\n  : null;\nconst reranked = best !== null;\nif (!reranked) best = [0, 1, 2, 3].filter(n => passages[n]);\n\nconst results = [...new Set(best)].slice(0, 4).map(n => ({\n  file_name: passages[n].file_name,\n  file_id: passages[n].file_id,\n  chunk_index: passages[n].chunk_index,\n  content: passages[n].content,                            // full text, image links included\n}));\nreturn [{ json: { reranked, candidates: passages.length, picked: [...new Set(best)].slice(0, 4), results } }];"
+      },
+      "id": "45c4620a-c42a-41b6-bebb-c39339c578fb",
+      "name": "Return best passages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        250
+      ]
+    },
+    {
+      "id": "3c53e25f-6a21-4783-9537-5575dea2c16e",
+      "name": "Search with reranking",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        0
+      ],
+      "parameters": {
+        "content": "## RAG – Search (reranked)\nCalled by the chat agent's **search_documents** tool.\n\n1. Finds the **25 passages** closest in meaning to the question (pgvector in Supabase, same embedding model as ingestion).\n2. **GPT-5.4 mini** reads the question and each passage and keeps **up to 4** that actually answer it — similar is not the same as useful (cover pages and title slides score high otherwise).\n3. If GPT's reply is unusable, falls back to plain vector order, so search never fails.\n\nMust stay **published**: the agent can only call published workflows.",
+        "height": 650,
+        "width": 1240,
+        "color": 6
+      }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Vector search (25 candidates)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Azure OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Vector search (25 candidates)",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector search (25 candidates)": {
+      "main": [
+        [
+          {
+            "node": "Build rerank prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build rerank prompt": {
+      "main": [
+        [
+          {
+            "node": "Rerank with GPT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT reranker model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Rerank with GPT",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rerank with GPT": {
+      "main": [
+        [
+          {
+            "node": "Return best passages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "active": false
+}

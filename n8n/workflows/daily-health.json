@@ -1,0 +1,164 @@
+{
+  "id": "ragDailyHealth01",
+  "name": "RAG – Daily health",
+  "nodes": [
+    {
+      "id": "1d15ec81-7e56-4bf0-b27c-fc73ffcd482f",
+      "name": "Every morning 8:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        40,
+        171
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "20fd1c13-d427-4902-bb30-6f503cc7bff8",
+      "name": "Manual test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        40,
+        361
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "c5b554fa-2947-4adb-863d-79d83b104bc4",
+      "name": "Health numbers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        280,
+        171
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      },
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- One row of health numbers for the daily message. No question text, no names.\nselect\n  (select count(distinct metadata->>'file_id') from documents)                      as files_searchable,\n  (select count(*) from documents)                                                  as passages,\n  (select count(*) from storage.objects where bucket_id = 'document-images')        as images,\n  (select count(distinct file_id) from document_rows)                               as sheets,\n  (select count(*) from ingestion_log where logged_at > now() - interval '24 hours'\n      and step in ('vector_write', 'rows_write'))                                   as ingested_24h,\n  -- a file counts as failing only if its LATEST log entry is a failure (later successes clear it)\n  (select count(*) from (select distinct on (file_id) status from ingestion_log where file_id is not null\n                         order by file_id, id desc) l where l.status = 'failed')   as failing_now,\n  (select count(*) from (select distinct on (file_id) status from ingestion_log where file_id is not null\n                         order by file_id, id desc) l where l.status = 'retry')    as retrying_now,\n  (select count(*) from ingestion_log where logged_at > now() - interval '24 hours'\n      and status = 'skipped')                                                        as skipped_24h,\n  (select string_agg(left(coalesce(file_name, '?'), 45) || ': ' || left(coalesce(message, ''), 70), E'\\n')\n     from (select * from (select distinct on (file_id) file_name, message, status from ingestion_log\n                           where file_id is not null order by file_id, id desc) l\n            where l.status = 'failed' limit 5) f)                                   as failures,\n  (select count(*) from usage_log where asked_at > now() - interval '24 hours')    as questions_24h,\n  (select count(distinct user_hash) from usage_log where asked_at > now() - interval '24 hours') as people_24h,\n  (select count(*) from usage_log where asked_at > now() - interval '7 days')      as questions_7d,\n  (select count(distinct user_hash) from usage_log where asked_at > now() - interval '7 days')   as people_7d,\n  (select count(*) from privacy_log where at > now() - interval '24 hours')        as erasures_24h;",
+        "options": {}
+      }
+    },
+    {
+      "id": "857ba3bd-27c7-4df2-92ac-cd3b9c84f10c",
+      "name": "Write the message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        171
+      ],
+      "parameters": {
+        "jsCode": "// Turn the numbers into a short Telegram message (plain text, no names, no question text).\nconst s = $input.first().json;\nconst n = v => Number(v ?? 0).toLocaleString('en-US');\nconst people = v => `${n(v)} ${Number(v) === 1 ? 'person' : 'people'}`;\nconst day = new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });\nconst lines = [\n  `RAG health · ${day}`,\n  '',\n  `Library: ${n(s.files_searchable)} documents searchable · ${n(s.passages)} passages · ${n(s.images)} images · ${n(s.sheets)} spreadsheets`,\n  `Last 24 h ingestion: ${n(s.ingested_24h)} processed · ${n(s.skipped_24h)} skipped · now failing: ${n(s.failing_now)} · retrying: ${n(s.retrying_now)}`,\n  `Questions: ${n(s.questions_24h)} in 24 h (${people(s.people_24h)}) · ${n(s.questions_7d)} in 7 days (${people(s.people_7d)})`,\n];\nif (Number(s.erasures_24h) > 0) lines.push(`Privacy: ${n(s.erasures_24h)} erasure request(s) carried out`);\nif (Number(s.failing_now) > 0) lines.push('', 'Needs a look — still failing:', s.failures);\nif (Number(s.retrying_now) > 0) lines.push('', 'Some files are retrying (temporary errors); they will be picked up on later runs.');\nlines.push('', 'Spend: Azure emails you at 50% / 80% of your monthly budget.');\n// Telegram parses formatting; send HTML with &, < and > escaped so file names (underscores etc.) can't break it\nconst esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst out = lines.map(esc);\nout[0] = `<b>${out[0]}</b>`;\nreturn [{ json: { text: out.join('\\n') } }];"
+      }
+    },
+    {
+      "id": "91d53612-537a-44ec-b3db-093ecfb659e4",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        760,
+        171
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram – health bot"
+        }
+      },
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "__TELEGRAM_CHAT_ID__",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      }
+    },
+    {
+      "id": "f31c60b9-57c5-4f6e-b9e9-0bc591cd6321",
+      "name": "Daily health message",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        0
+      ],
+      "parameters": {
+        "content": "## RAG – Daily health (8:00 every morning)\nCounts what matters from Supabase — documents searchable, last-24-hour ingestion, files **still** failing, questions and active people — and sends one Telegram message. No question text, no names.\n\nUse **Manual test** to send one now.",
+        "height": 571,
+        "width": 1000,
+        "color": 5
+      }
+    }
+  ],
+  "connections": {
+    "Every morning 8:00": {
+      "main": [
+        [
+          {
+            "node": "Health numbers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual test": {
+      "main": [
+        [
+          {
+            "node": "Health numbers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health numbers": {
+      "main": [
+        [
+          {
+            "node": "Write the message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write the message": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all"
+  },
+  "active": false
+}

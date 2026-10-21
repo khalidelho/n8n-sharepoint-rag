@@ -1,0 +1,51 @@
+# Open WebUI — the ChatGPT-style front end. Its only "model" is the n8n agent, reached through
+# the Knowledge Assistant pipe function (open-webui/knowledge_assistant_pipe.py), which calls
+# http://host.docker.internal:5680/webhook/rag-chat.
+
+name: rag-openwebui
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.12.3
+    restart: unless-stopped
+    ports:
+      - '3000:8080'
+    environment:
+      WEBUI_NAME: Private RAG
+      WEBUI_URL: http://localhost:3000
+      # Signs login sessions; from .env so it survives container recreation
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      # The only "model" is the n8n agent, so don't probe Ollama/OpenAI
+      ENABLE_OLLAMA_API: 'false'
+      ENABLE_OPENAI_API: 'false'
+      # Keep chats on this machine
+      ENABLE_COMMUNITY_SHARING: 'false'
+      ANONYMIZED_TELEMETRY: 'false'
+      SCARF_NO_ANALYTICS: 'true'
+      DO_NOT_TRACK: 'true'
+      TZ: America/Los_Angeles
+    volumes:
+      - open-webui-data:/app/backend/data
+
+  # Retention: once a day, delete chats untouched for RETENTION_DAYS, using Open WebUI's
+  # own delete code (messages and shared links go with each chat). Same image + data volume.
+  retention:
+    image: ghcr.io/open-webui/open-webui:v0.12.3
+    restart: unless-stopped
+    command: ['python', '/ops/retention.py', '--loop']
+    working_dir: /app/backend
+    environment:
+      PYTHONPATH: /app/backend
+      RETENTION_DAYS: '90'
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      TZ: America/Los_Angeles
+    volumes:
+      - open-webui-data:/app/backend/data
+      - ./ops:/ops:ro
+    depends_on:
+      - open-webui
+    healthcheck:
+      disable: true   # the image's check pings the web server, which this container doesn't run
+
+volumes:
+  open-webui-data:

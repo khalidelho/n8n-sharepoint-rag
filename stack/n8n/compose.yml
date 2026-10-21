@@ -1,0 +1,119 @@
+# n8n for the private RAG stack — production queue mode:
+#   main instance (UI + triggers + webhooks) → jobs onto Redis → 2 workers execute them,
+#   n8n's own data in a dedicated Postgres container. Editor/webhooks on :5680.
+# Supabase (the RAG data) is a separate stack; reach it from here via
+# host.docker.internal:8000 (API) and host.docker.internal:5432 (Postgres pooler).
+
+# Explicit project name: without it Compose names the project after the folder ("n8n"),
+# which can collide with another n8n stack and silently mount *its* data volume.
+name: rag-n8n
+
+x-n8n-env: &n8n-env
+  # n8n's own database (workflows, credentials, execution history)
+  DB_TYPE: postgresdb
+  DB_POSTGRESDB_HOST: postgres
+  DB_POSTGRESDB_PORT: 5432
+  DB_POSTGRESDB_DATABASE: n8n
+  DB_POSTGRESDB_USER: n8n
+  DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
+  # Queue mode: main puts executions on Redis, workers pull and run them
+  EXECUTIONS_MODE: queue
+  QUEUE_BULL_REDIS_HOST: redis
+  QUEUE_BULL_REDIS_PORT: 6379
+  OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS: "true"
+  # Must be identical on main and every worker, or workers can't decrypt credentials
+  N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+  # Code nodes run in a task-runner child process inside each container (JavaScript)
+  N8N_RUNNERS_MODE: internal
+  N8N_HOST: localhost
+  N8N_PORT: 5678
+  N8N_PROTOCOL: http
+  # Public URL n8n uses for webhook URLs and the OAuth redirect URL shown in credentials
+  WEBHOOK_URL: http://localhost:5680/
+  N8N_EDITOR_BASE_URL: http://localhost:5680/
+  GENERIC_TIMEZONE: America/Los_Angeles
+  TZ: America/Los_Angeles
+  N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+  N8N_DIAGNOSTICS_ENABLED: "false"
+  # Saved executions can be large (documents travel through OCR as base64); keep at most
+  # 3 days / 500 runs. The ingestion_log table in Supabase is the long-term record.
+  EXECUTIONS_DATA_PRUNE: "true"
+  EXECUTIONS_DATA_MAX_AGE: "72"
+  EXECUTIONS_DATA_PRUNE_MAX_COUNT: "500"
+  QUEUE_HEALTH_CHECK_ACTIVE: "true"
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: n8n
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD: ${N8N_DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U n8n -d n8n']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # No ports published: only the n8n containers talk to this database.
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  n8n-main:
+    image: docker.io/n8nio/n8n:2.43.8
+    restart: unless-stopped
+    environment: *n8n-env
+    ports:
+      - '5680:5678'
+    volumes:
+      - n8n-data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:5678/healthz || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  n8n-worker-1: &worker
+    image: docker.io/n8nio/n8n:2.43.8
+    restart: unless-stopped
+    command: worker
+    environment: *n8n-env
+    volumes:
+      - n8n-data:/home/node/.n8n
+    depends_on:
+      n8n-main:
+        condition: service_healthy
+
+  n8n-worker-2: *worker
+
+  # Document helper for the OCR step: splits long PDFs into 10-page parts (Azure Mistral OCR
+  # rejects PDFs over 30 pages / 30 MB, and image descriptions make big requests slow) and converts PPTX/DOC → PDF via LibreOffice.
+  # Internal only — n8n calls it at http://gotenberg:3000; no ports published.
+  gotenberg:
+    image: docker.io/gotenberg/gotenberg:8.37.0
+    restart: unless-stopped
+    command:
+      - gotenberg
+      - --api-timeout=300s   # default 30s is too short for converting large decks
+
+volumes:
+  postgres-data:
+  redis-data:
+  n8n-data:
