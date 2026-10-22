@@ -84,7 +84,11 @@ If you import with the CLI instead (`n8n import:workflow`), imports arrive unpub
 `web_search` tool, using the same **Azure AI – RAG** credential. Edit `ALLOWED_DOMAINS` in its *Build web search
 request* node (max 20 domains): add your state environmental agency, your state's regulations site and your
 local public-works site to the federal defaults. Only a short model-written search query leaves Azure; the agent
-is instructed never to put document text, file names, project names or people in a query. Note: `web_search_preview` does not accept domain filters — use `web_search`.
+is instructed never to put document text, file names, project names or people in a query. The same workflow serves two
+scopes: `verified` (the allow-list, used by the agent's `search_web`) and `open` (no filter, `search_open_web`); its last
+step sorts every result bullet into `verified_findings` / `wider_findings` by its cited link, and the chat agent's
+*Append web sections* step renders them. The chat agent also runs a small *question router* before the agent (three
+nodes before the agent) — no setup beyond the Azure credential. Note: `web_search_preview` does not accept domain filters — use `web_search`.
 
 ## 7. Open WebUI pipe
 

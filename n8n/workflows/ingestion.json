@@ -1783,7 +1783,7 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        -32,
+        -16,
         0
       ]
     },
@@ -1939,8 +1939,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1128,
-        2252
+        1136,
+        2256
       ]
     },
     {
@@ -1958,7 +1958,6 @@
     },
     {
       "parameters": {
-        "operation": "decompress",
         "binaryPropertyName": "workbook_zip",
         "outputPrefix": "part_"
       },
@@ -2032,15 +2031,15 @@
         2560,
         2320
       ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
       "credentials": {
         "azureOpenAiApi": {
           "name": "Azure AI – RAG"
         }
       },
-      "onError": "continueRegularOutput",
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 5000
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -2111,13 +2110,11 @@
       "typeVersion": 2,
       "position": [
         1840,
-        1500
+        1504
       ]
     },
     {
       "parameters": {
-        "operation": "decompress",
-        "binaryPropertyName": "data",
         "outputPrefix": "part_"
       },
       "id": "4c1d9565-97d2-44e0-be60-3fc96cf53840",
@@ -2126,7 +2123,7 @@
       "typeVersion": 1.1,
       "position": [
         2080,
-        1500
+        1504
       ],
       "onError": "continueErrorOutput"
     },
@@ -2140,7 +2137,7 @@
       "typeVersion": 2,
       "position": [
         2320,
-        1500
+        1504
       ]
     },
     {
@@ -2155,7 +2152,7 @@
       "typeVersion": 2.7,
       "position": [
         2560,
-        1500
+        1504
       ],
       "id": "83b51fc4-3fa3-423b-baa5-e5197acbc5bc",
       "name": "Store tables & mark archive",
