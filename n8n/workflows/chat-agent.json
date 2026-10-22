@@ -19,8 +19,9 @@
     {
       "parameters": {
         "options": {
-          "systemMessage": "You are the assistant for a company knowledge base: manuals, SOPs,\ntraining decks, checklists, reports and spreadsheets. You answer ONLY from these documents.\n\nHow to work — follow these rules every time:\n1. Start with search_documents for anything in the documents (manuals, SOPs, decks, PDFs) unless the answer is already\n   fully contained in this conversation's earlier tool results. Spreadsheet data (every row of every Excel tab) is NOT in\n   search_documents — it is only reachable with query_spreadsheets.\n2. If the passages returned are not enough to answer, look at their metadata, choose the most\n   relevant file, and call get_full_document with its file_id. Do not answer from partial passages\n   when the full document would settle it.\n3. If the question mentions a spreadsheet, workbook, sheet, tab, table or calculation sheet, or needs ANY calculation,\n   total, average, count, filter or comparison of values, you MUST use query_spreadsheets — even if search_documents\n   found nothing or only a blank template. Never do arithmetic yourself.\n   a) First list what exists: select file_name, row_data->>'_sheet' as tab, count(*) from document_rows group by 1, 2 order by 1, 2;\n   b) Engineering sheets often have title rows and multi-row headers, so many columns are named __EMPTY, __EMPTY_1, …\n      and the real headings (\"Amount (USD)\", \"Total Hours\") are VALUES in the first rows of the tab. To find the\n      column for a heading, search the rows for it, e.g.:\n      select id, row_data from document_rows where file_name = 'X.xlsx' and row_data->>'_sheet' = 'Tab'\n        and row_data::text ilike '%Amount%' order by id limit 5;\n      then see which key holds that heading. Or read the tab's first 10 rows (order by id).\n   c) Compute with SQL over REAL data rows only, guarding numeric casts: where row_data->>'KEY' ~ '^-?[0-9.]+$'\n      Skip title/header rows, blank template rows and total/summary rows. Real rows have an ID or label (e.g. an item\n      ID like \"A-1\" or \"B-12\"); template rows below the data have none and are full of zeros/constants. So ALWAYS\n      find the ID column (search for its heading, e.g. '%Item ID%') and add: and coalesce(row_data->>'ID_KEY','') <> ''\n      Cross-check before answering: if the number of rows you used is larger than the number of rows with an ID,\n      you included template rows — redo the query.\n   d) Say which workbook, tab and column you used and how many rows (e.g. \"across 40 items\").\n   e) Round results sensibly (2–3 decimals) and give units from the heading. Never show internal keys like\n      __EMPTY_33 to the user — use the real heading.\n   f) If the question asks for an average/total but doesn't name a column, don't just ask back: use the most relevant\n      workbook and tab, give a small table of the averages (or totals) of its main numeric columns, then offer to\n      drill into one.\n4. Passages may contain screenshots and diagrams written as ![description](url).\n   When you explain steps, a procedure, a screen, a form or a diagram, and a passage has an image of it,\n   you MUST include that image — copy the markdown exactly, URL unchanged — directly under the step it\n   illustrates. Never collect images at the end, and never invent image URLs.\n5. Cite each source file once per section (or once at the end, if the whole answer comes from one file), e.g. (Source: Safety Manual.pdf).\n6. If the tools do not return enough information, say plainly that the answer is not in the\n   documents. Do not guess, do not fill gaps, and do not blend in content from unrelated files.\n   Never say spreadsheet data doesn't exist until you have listed the workbooks with query_spreadsheets.\n7. Keep it efficient: if after about 8 tool calls you still can't finish, stop and answer with what you found\n   and what is missing — never keep searching indefinitely.\n8. Web (search_web): the documents are the organization's source of truth. Use search_web only when the question asks\n   about CURRENT / latest regulations, requirements, recent changes or best practices, when the documents do not answer\n   it, or in review mode. Never use it for what the documents already answer.\n   Write each search_web query as a short, generic search (e.g. \"current stormwater management permit requirements\"); never put\n   document text, file names, project names or people in a query — the query leaves the organization.\n   When you used search_web, structure the answer in two clearly separate sections:\n   ### From your documents\n   — only facts from search_documents / get_full_document / query_spreadsheets, cited by file name\n     (write \"Nothing relevant found in the documents.\" if so)\n   ### From the web — current public sources (verify before relying)\n   — only facts from search_web, each with its link as [title](url); end with \"Retrieved <retrieved date>.\"\n   Never mix the two in one sentence. If the web contradicts a document, say so explicitly, name both, and do not\n   silently override the document. When you did not use search_web, answer normally without these headings.\n9. Review mode — when asked to review, update, check, modernize or compare a template, standard, SOP, checklist,\n   scope of work or guideline:\n   a) Read the template in full: find it with search_documents, then get_full_document (or use text the user pasted).\n      If you can't identify it, ask which document to review.\n   b) Search the documents 2–3 times for related internal standards, guidance and checklists (not the template itself).\n   c) Call search_web 1–2 times for current regulations and best practices on the same subject.\n   d) Answer with these sections:\n      **Summary** — 2–3 sentences: what the template is and how complete it looks.\n      **Already covered** — short bullets.\n      **Recommended additions / updates** — a table: | # | Recommendation | Why | Source | Priority |\n        Every Source cell MUST start with (doc) followed by the file name, or (web) followed by a [title](url) link;\n        Priority = High / Medium / Low.\n      **Possibly outdated** — items that conflict with newer documents or current regulations (or \"None found\").\n      **Suggested wording** — draft text for the top 3 recommendations.\n      Then the two source sections from rule 8.\n   Recommend only what a source supports; never invent requirements.\n\nAnswer in clear, concise Markdown.\n",
-          "maxIterations": 15
+          "systemMessage": "=You are the assistant for a company knowledge base: manuals, SOPs,\ntraining decks, checklists, reports and spreadsheets. You answer ONLY from these documents.\n\nHow to work — follow these rules every time:\n1. Start with search_documents for anything in the documents (manuals, SOPs, decks, PDFs) unless the answer is already\n   fully contained in this conversation's earlier tool results. Spreadsheet data (every row of every Excel tab) is NOT in\n   search_documents — it is only reachable with query_spreadsheets.\n2. If the passages returned are not enough to answer, look at their metadata, choose the most\n   relevant file, and call get_full_document with its file_id. Do not answer from partial passages\n   when the full document would settle it.\n3. If the question mentions a spreadsheet, workbook, sheet, tab, table or calculation sheet, or needs ANY calculation,\n   total, average, count, filter or comparison of values, you MUST use query_spreadsheets — even if search_documents\n   found nothing or only a blank template. Never do arithmetic yourself.\n   a) First list what exists: select file_name, row_data->>'_sheet' as tab, count(*) from document_rows group by 1, 2 order by 1, 2;\n   b) Engineering sheets often have title rows and multi-row headers, so many columns are named __EMPTY, __EMPTY_1, …\n      and the real headings (\"Amount (USD)\", \"Total Hours\") are VALUES in the first rows of the tab. To find the\n      column for a heading, search the rows for it, e.g.:\n      select id, row_data from document_rows where file_name = 'X.xlsx' and row_data->>'_sheet' = 'Tab'\n        and row_data::text ilike '%Amount%' order by id limit 5;\n      then see which key holds that heading. Or read the tab's first 10 rows (order by id).\n   c) Compute with SQL over REAL data rows only, guarding numeric casts: where row_data->>'KEY' ~ '^-?[0-9.]+$'\n      Skip title/header rows, blank template rows and total/summary rows. Real rows have an ID or label (e.g. an item\n      ID like \"A-1\" or \"B-12\"); template rows below the data have none and are full of zeros/constants. So ALWAYS\n      find the ID column (search for its heading, e.g. '%Item ID%') and add: and coalesce(row_data->>'ID_KEY','') <> ''\n      Cross-check before answering: if the number of rows you used is larger than the number of rows with an ID,\n      you included template rows — redo the query.\n   d) Say which workbook, tab and column you used and how many rows (e.g. \"across 40 items\").\n   e) Round results sensibly (2–3 decimals) and give units from the heading. Never show internal keys like\n      __EMPTY_33 to the user — use the real heading.\n   f) If the question asks for an average/total but doesn't name a column, don't just ask back: use the most relevant\n      workbook and tab, give a small table of the averages (or totals) of its main numeric columns, then offer to\n      drill into one.\n4. Passages may contain screenshots and diagrams written as ![description](url).\n   When you explain steps, a procedure, a screen, a form or a diagram, and a passage has an image of it,\n   you MUST include that image — copy the markdown exactly, URL unchanged — directly under the step it\n   illustrates. Never collect images at the end, and never invent image URLs.\n5. Cite each source file once per section (or once at the end, if the whole answer comes from one file), e.g. (Source: Safety Manual.pdf).\n6. If the tools do not return enough information, say plainly that the answer is not in the\n   documents. Do not guess, do not fill gaps, and do not blend in content from unrelated files.\n   Never say spreadsheet data doesn't exist until you have listed the workbooks with query_spreadsheets.\n7. Keep it efficient: if after about 8 tool calls you still can't finish, stop and answer with what you found\n   and what is missing — never keep searching indefinitely.\n8. Web — the documents are the organization's source of truth. Two web tools:\n   • search_web — VERIFIED public sources only (allow-listed agencies, regulations, federal guidance).\n   • search_open_web — the wider web (industry, manufacturers, research, practice articles) — NOT verified.\n   After searching the documents, you MUST also call search_web when ANY of these is true:\n     (1) the question asks about current / latest / new / emerging / recent regulations, requirements, changes,\n         technologies, products or best practices;\n     (2) the question names a product, method, standard or requirement that your document search did not find\n         (report what the documents say, then search the web for the missing part — do not just offer to);\n     (3) the user asks for other, wider or outside sources; (4) review mode.\n   Then you MUST also call search_open_web when the verified sources didn't cover it, when the user asks for wider /\n   other sources, or when the question is about technologies, products or approaches (industry and manufacturer\n   information lives outside the verified list). Do not use the web for questions the documents fully answer,\n   such as how-to steps, document contents or spreadsheet values.\n   Write each web query as a short, generic search (e.g. \"current stormwater management permit requirements\"); never put\n   document text, file names, project names or people in a query — the query leaves the organization.\n   When you used a web tool, write the documents part as:\n   ### From your documents\n   — only facts from search_documents / get_full_document / query_spreadsheets, cited by file name\n     (write \"Nothing relevant found in the documents.\" if so)\n   Do NOT write the web sections yourself: the system appends \"From verified public sources\" and \"From the wider\n   web — not on the verified list\" automatically, with every finding and link exactly as the web tools returned them.\n   You may add a short summary before them only if every point is tagged (doc), (verified) or (wider web). If a web\n   finding contradicts a document, say so in that summary and name both — documents take precedence.\n   When you used no web tool, answer normally without these headings.\n9. Review mode — when asked to review, update, check, modernize or compare a template, standard, SOP, checklist,\n   scope of work or guideline:\n   a) Read the template in full: find it with search_documents, then get_full_document (or use text the user pasted).\n      If you can't identify it, ask which document to review.\n   b) Search the documents 2–3 times for related internal standards, guidance and checklists (not the template itself).\n   c) Call search_web 1–2 times for current regulations and best practices on the same subject; add one search_open_web\n      call if newer technologies or approaches would strengthen the recommendations.\n   d) Answer with these sections:\n      **Summary** — 2–3 sentences: what the template is and how complete it looks.\n      **Already covered** — short bullets.\n      **Recommended additions / updates** — a table: | # | Recommendation | Why | Source | Priority |\n        Every Source cell MUST start with (doc) + the file name, (web) + a [title](url) link for verified sources, or\n        (web – unverified) + a [title](url) link for wider-web sources;\n        Priority = High / Medium / Low.\n      **Possibly outdated** — items that conflict with newer documents or current regulations (or \"None found\").\n      **Suggested wording** — draft text for the top 3 recommendations.\n      Then the documents section from rule 8 (the web sections are appended automatically).\n   Recommend only what a source supports; never invent requirements.\n\nAnswer in clear, concise Markdown.\n{{ $json.routingNote || '' }}",
+          "maxIterations": 18,
+          "returnIntermediateSteps": true
         },
         "promptType": "define",
         "text": "={{ $json.chatInput }}"
@@ -302,8 +303,8 @@
         0
       ],
       "parameters": {
-        "content": "## ① How questions arrive\nTwo doors into the same agent:\n- the **n8n test chat** (for building and testing)\n- the **Open WebUI webhook** (`POST /webhook/rag-chat`, requires the secret token)\n\nWebhook input is normalised to `{chatInput, sessionId}` (session = person:chat). Then one usage row is logged: the time plus hashed person and chat IDs — **never the question text**.",
-        "height": 615,
+        "content": "## ① How questions arrive\nTwo doors into the same agent:\n- the **n8n test chat** (for building and testing)\n- the **Open WebUI webhook** (`POST /webhook/rag-chat`, requires the secret token)\n\nWebhook input is normalised to `{chatInput, sessionId}` (session = person:chat). Then one usage row is logged: the time plus hashed person and chat IDs — **never the question text**.\n\n**Question router** (bottom row): one small gpt-5.4-mini call classifies each question — web needed (none / verified / verified + wider) and review mode — and appends a per-question instruction to the agent's system message, so web searches happen reliably when they should, and plain how-to or spreadsheet questions are told to stay on the documents.",
+        "height": 780,
         "width": 760,
         "color": 5
       }
@@ -318,7 +319,7 @@
         0
       ],
       "parameters": {
-        "content": "## ② The agent — GPT-5.4 mini\nFollows the six rules in its system message: always search first · read the full document when passages aren't enough · SQL for any math · screenshots inline · cite the file · say so when the answer isn't in the documents.\n\n**Memory:** the last 10 messages of this chat, stored in Supabase `n8n_chat_histories` and deleted after 90 days.",
+        "content": "## ② The agent — GPT-5.4 mini\nFollows the six rules in its system message: always search first · read the full document when passages aren't enough · SQL for any math · screenshots inline · cite the file · say so when the answer isn't in the documents.\n\n**Memory:** the last 10 messages of this chat, stored in Supabase `n8n_chat_histories` and deleted after 90 days.\n\n**Append web sections** (right of the agent): the web findings are added by code, exactly as the web tools sorted them — the model writes only the documents part, so verified vs wider-web labels can't be mixed up.",
         "height": 637,
         "width": 520,
         "color": 4
@@ -334,7 +335,7 @@
         0
       ],
       "parameters": {
-        "content": "## ③ The agent's tools — it decides which to use\n- **search_documents** → sub-workflow *RAG – Search (reranked)*: 25 passages by meaning, GPT keeps the best 4\n- **get_full_document** → every passage of one file, in order\n- **query_spreadsheets** → SQL the agent writes itself on `document_rows`\n\nBoth database tools use a **read-only** login: they can't change anything, and queries stop after 15 seconds.\n\n**search_web** (bottom) — allow-listed public sources for *current* regulations and best practices. Answers that use it are split into **From your documents** / **From the web**. Review mode (rule 9) combines all tools into a gap report for a template or standard.",
+        "content": "## ③ The agent's tools — it decides which to use\n- **search_documents** → sub-workflow *RAG – Search (reranked)*: 25 passages by meaning, GPT keeps the best 4\n- **get_full_document** → every passage of one file, in order\n- **query_spreadsheets** → SQL the agent writes itself on `document_rows`\n\nBoth database tools use a **read-only** login: they can't change anything, and queries stop after 15 seconds.\n\n**search_web** (bottom) — verified, allow-listed public sources for *current* regulations and best practices. **search_open_web** — the wider web, only when the verified list doesn't cover it. Answers keep three sections: **From your documents** / **From verified public sources** / **From the wider web — not on the verified list**. Review mode (rule 9) combines all tools into a gap report for a template or standard.",
         "height": 620,
         "width": 760,
         "color": 6
@@ -358,7 +359,7 @@
     },
     {
       "parameters": {
-        "description": "Searches AUTHORITATIVE PUBLIC WEB SOURCES only (by default federal: EPA, eCFR, Federal Register, FHWA, NRCS,\nUSACE, FEMA, NOAA/USGS — plus any state or local domains you add) for CURRENT regulations, standards and best\npractices. Use it only when the question asks what is current / latest / changed, about regulations or best practices,\nwhen the documents don't answer, or in review mode. Input: one focused search query.\nReturns web_findings, sources (title + url) and the retrieved date.",
+        "description": "Searches VERIFIED, AUTHORITATIVE PUBLIC WEB SOURCES only (by default federal: EPA, eCFR, Federal Register, FHWA, NRCS,\nUSACE, FEMA, NOAA/USGS — plus any state or local domains you add) for CURRENT regulations, standards and best\npractices. Use it only when the question asks what is current / latest / changed, about regulations or best practices,\nwhen the documents don't answer, or in review mode. Input: one focused search query.\nReturns verified_findings (each bullet with its link) and the retrieved date.",
         "workflowId": {
           "__rl": true,
           "value": "ragWebSearch0001",
@@ -369,13 +370,24 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "query": "={{ $fromAI('query', 'A focused web search query about current regulations, standards or best practices', 'string') }}"
+            "query": "={{ $fromAI('query', 'A focused web search query about current regulations, standards or best practices', 'string') }}",
+            "scope": "verified"
           },
           "matchingColumns": [],
           "schema": [
             {
               "id": "query",
               "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "scope",
+              "displayName": "scope",
               "required": false,
               "defaultMatch": false,
               "display": true,
@@ -396,6 +408,127 @@
         1720,
         430
       ]
+    },
+    {
+      "parameters": {
+        "description": "Searches the WIDER WEB (not limited to the verified list): industry and manufacturer guidance, research,\nprofessional associations, practice articles. Results are NOT verified. Use only after search_web when the verified sources\ndon't cover it, when the user asks for other / wider sources, or for newer technologies, products and approaches.\nInput: one focused, generic search query. Returns verified_findings and wider_findings (already sorted, each bullet with its link) and the retrieved date.",
+        "workflowId": {
+          "__rl": true,
+          "value": "ragWebSearch0001",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ragWebSearch0001",
+          "cachedResultName": "RAG – Web search (allow-listed)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', 'A focused, generic web search query', 'string') }}",
+            "scope": "open"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "scope",
+              "displayName": "scope",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "0178336a-d6af-4097-976c-add312186655",
+      "name": "search_open_web",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        430
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Question router, step 1: one small classification call BEFORE the agent decides anything.\n// Classifies: does this question need the web (none / verified / verified + wider web)? Is it a review request?\n// The agent follows a per-question instruction far more reliably than a general rule in a long prompt.\nconst ROUTER_PROMPT = \"You route questions for an engineering knowledge assistant whose primary source is the organization's internal documents (manuals, SOPs, design guides, templates, spreadsheets, plan sets, training). Return JSON {web, review}.\\nweb:\\n- \\\"none\\\": how-to steps; what a document, sheet, figure or template says; spreadsheet values or calculations; internal procedures; people or projects \\u2014 anything the internal documents should fully answer.\\n- \\\"verified\\\": asks about CURRENT / latest / recent / updated regulations, requirements, permits, criteria or official guidance, or names an external regulation or agency standard.\\n- \\\"verified_and_open\\\": asks about technologies, products, materials, vendors, newer or emerging approaches, industry practice, or explicitly asks for web / outside / wider / other sources.\\nreview: true when the user asks to review, update, check, modernize or compare a template, standard, SOP, checklist, scope of work or guideline (then web must be at least \\\"verified\\\").\";\nreturn { json: { ...$json, routerBody: {\n  model: 'gpt-5.4-mini', reasoning_effort: 'low', max_completion_tokens: 400,\n  response_format: { type: 'json_schema', json_schema: { name: 'route', strict: true, schema: {\n    type: 'object', additionalProperties: false, required: ['web', 'review'],\n    properties: { web: { type: 'string', enum: ['none', 'verified', 'verified_and_open'] }, review: { type: 'boolean' } } } } },\n  messages: [ { role: 'system', content: ROUTER_PROMPT }, { role: 'user', content: String($json.chatInput ?? '') } ],\n} } };"
+      },
+      "id": "a2c8eaaa-0e4b-4311-a726-3ec71ad867fd",
+      "name": "Build routing request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://__AZURE_AI_HOST__/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "azureOpenAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.routerBody) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "35938412-8826-4c2b-80cc-3455d46aa660",
+      "name": "Route question (classifier)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        640
+      ],
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Question router, step 3: turn the classification into an instruction appended to the agent's system message\n// for THIS question only (it is not stored in chat memory). If routing failed, no note — the agent decides itself.\nconst src = $('Build routing request').item.json;\nlet route = { web: 'none', review: false };\ntry { route = JSON.parse($json.choices?.[0]?.message?.content ?? '{}'); } catch (e) {}\nlet note = '';\nif (route.web === 'none' && !route.review) note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): answer from the documents only — do not call search_web or search_open_web.';\nif (route.review) note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): this is a review-mode request — follow rule 9, including its web steps.';\nif (route.web === 'verified' || route.web === 'verified_and_open') {\n  note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): after searching the documents you MUST call search_web' +\n    (route.web === 'verified_and_open' ? ', then search_open_web,' : '') + ' and answer with the labelled sections from rule 8.';\n}\nconst { routerBody, ...rest } = src;\nreturn { json: { ...rest, route, routingNote: note } };"
+      },
+      "id": "9ccb8a20-f6d5-40e6-942a-c6f3ec3701ff",
+      "name": "Add routing note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Append the web sections FROM CODE, not from the model: every finding and link exactly as the web tools returned\n// them, already sorted by trust level. The model only writes the documents part, so a source can never be relabelled,\n// paraphrased or dropped. (The agent returns its tool calls as intermediateSteps.)\nconst out = String($json.output ?? '');\nconst steps = Array.isArray($json.intermediateSteps) ? $json.intermediateSteps : [];\nconst webSteps = steps.filter(s => ['search_web', 'search_open_web'].includes(s.action?.tool));\nif (!webSteps.length) return [{ json: { output: out } }];\n\nconst verified = [], wider = [], failures = []; let retrieved = '', openUsed = false;\nconst add = (list, text) => { for (const b of String(text ?? '').split(/\\n\\s*\\n/).map(x => x.trim()))\n  if (b && !b.startsWith('(') && !list.includes(b)) list.push(b); };\nfor (const s of webSteps) {\n  if (s.action.tool === 'search_open_web') openUsed = true;\n  let obs = s.observation; try { obs = JSON.parse(obs); } catch (e) {}\n  for (const it of (Array.isArray(obs) ? obs : [obs])) {\n    const j = it?.json ?? it ?? {};\n    add(verified, j.verified_findings); add(wider, j.wider_findings);\n    if (String(j.note ?? '').startsWith('Web search failed')) failures.push(j.note);\n    retrieved = j.retrieved || retrieved;\n  }\n}\n// drop any web sections the model wrote anyway (from such a heading to the next non-web heading or the end)\n// (headings as #-#### or **bold**, anywhere including the very start)\nconst WEB_HEAD = /(?:^|\\n)[ \\t]*(?:#{1,4}[ \\t]*|\\*\\*)[ \\t]*From (?:verified public sources|the wider web)[\\s\\S]*?(?=\\n[ \\t]*(?:#{1,4}[ \\t]|\\*\\*)(?![ \\t]*From (?:verified public sources|the wider web))|$)/g;\nconst body = out.replace(WEB_HEAD, '').trim();\nconst parts = [body,\n  '### From verified public sources (verify before relying)\\n' + (verified.length ? verified.join('\\n')\n    : failures.length ? `_${failures[0]}_` : '_No verified public source covered this._')];\nif (openUsed) parts.push('### From the wider web — not on the verified list (use with caution)\\n' +\n  (wider.length ? wider.join('\\n') : '_Nothing credible found beyond the verified list._'));\nparts.push(`_Web sources retrieved ${retrieved || new Date().toISOString().slice(0, 10)}._`);\nreturn [{ json: { output: parts.join('\\n\\n') } }];"
+      },
+      "id": "980acd62-e55e-43bc-b8ed-c4cc5ccf6621",
+      "name": "Append web sections",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        57
+      ]
     }
   ],
   "connections": {
@@ -403,7 +536,7 @@
       "main": [
         [
           {
-            "node": "AI Agent",
+            "node": "Build routing request",
             "type": "main",
             "index": 0
           }
@@ -502,7 +635,7 @@
       "main": [
         [
           {
-            "node": "AI Agent",
+            "node": "Build routing request",
             "type": "main",
             "index": 0
           }
@@ -515,6 +648,61 @@
           {
             "node": "AI Agent",
             "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_open_web": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build routing request": {
+      "main": [
+        [
+          {
+            "node": "Route question (classifier)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route question (classifier)": {
+      "main": [
+        [
+          {
+            "node": "Add routing note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add routing note": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Append web sections",
+            "type": "main",
             "index": 0
           }
         ]

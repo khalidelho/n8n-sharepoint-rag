@@ -11,9 +11,11 @@ source cited and, for how-to questions, the relevant screenshots from the docume
 - **Reads everything:** PDFs, Word, PowerPoint (incl. scanned pages, via OCR), images inside documents
   (described by the OCR model so screenshots are searchable), photos with no text (described by a vision
   model), and spreadsheets (every tab of .xlsx/.xlsm) queried with SQL, not guessed from text.
-- **Knows what's current:** when the documents don't cover it (current regulations, recent changes, best
-  practices), it searches an **allow-list of authoritative public sites** and keeps those findings in a separate
-  **"From the web"** section, never mixed with **"From your documents"**. A **review mode** turns this into a gap
+- **Knows what's current — with three levels of trust:** when the documents don't cover it (current regulations,
+  recent changes, best practices, products), it searches an **allow-list of authoritative public sites** and, when
+  that isn't enough, the **wider web**. Answers keep three separate sections — **From your documents**, **From verified
+  public sources**, **From the wider web — not on the verified list** — and the web sections are assembled by code
+  from the sorted search results, so a source can never be relabelled. A **review mode** turns this into a gap
   report for any template, standard or checklist: what's covered, what to add, what may be outdated, with sources.
 - **Built for operations:** queue-mode n8n, overlap guard, per-file retry, a run time limit that cancels a
   frozen run, fallbacks for files the converter rejects, a daily health message,
@@ -57,7 +59,7 @@ flowchart LR
     ING --> EMB
     ING --> PG
     ING --> ST
-    OWU -- webhook + token --> AGT
+    OWU -- webhook + token --> RT[Question router<br/>gpt-5.4-mini] --> AGT
     AGT --> SRCH --> EMB
     SRCH --> GPT
     SRCH --> PG
@@ -66,7 +68,7 @@ flowchart LR
     HLT --> PG
     HLT --> TG
     AGT --> WS
-    WS -- Responses API web_search --> PUB[(Authoritative<br/>public sites)]
+    WS -- Responses API web_search --> PUB[(Public web:<br/>verified list + wider web)]
 ```
 
 ### Ingestion (the `RAG – Ingestion` workflow)
@@ -88,7 +90,11 @@ flowchart LR
 1. Open WebUI's **Knowledge Assistant** pipe forwards the newest message to an n8n webhook with a bearer
    token, labelling the memory session `<user-id>:<chat-id>`.
 2. A usage row is written with **hashes only** (who/which chat, never the question).
-3. A Tools Agent (gpt-5.4-mini) with Postgres chat memory decides which tools to call:
+3. A **question router** (one small gpt-5.4-mini call, JSON output) classifies the question — web needed: none /
+   verified / verified + wider web, and whether it's a review request — and appends a per-question instruction to the
+   agent's system message (for a documents-only question: "do not call the web tools"). The agent follows that far
+   more reliably than a general rule in a long prompt, so plain how-to and spreadsheet questions stay on the documents.
+4. A Tools Agent (gpt-5.4-mini) with Postgres chat memory decides which tools to call:
    - `search_documents` — vector search for 25 candidates → GPT reranks them and keeps up to 4
      (it may keep fewer). In side-by-side tests this beat plain vector order clearly: cover pages and
      duplicate copies of a deck stop crowding out the passage that actually answers the question.
@@ -99,10 +105,13 @@ flowchart LR
    - `search_web` — one call to the Azure OpenAI Responses API with its `web_search` tool, restricted to an
      allow-list of authoritative domains (edit it in the workflow; max 20). Used only for *current*
      regulations, recent changes or best practices, or when the documents don't answer.
-4. The answer comes back with citations and inline screenshots. When the web was used, it has two separate
-   sections — **From your documents** and **From the web — current public sources (verify before relying)** —
-   and any conflict between them is called out instead of silently resolved.
-5. **Review mode** ("review this template against our standards and current regulations"): the agent reads the
+   - `search_open_web` — the same tool without the domain filter, for products, newer approaches and anything the
+     verified list doesn't cover. Every result bullet is sorted by its cited link: allow-listed → verified, anything
+     else → wider web.
+5. The model writes the documents part; an **Append web sections** code step then adds **From verified public
+   sources** and **From the wider web — not on the verified list (use with caution)** exactly as the web tools sorted
+   them (bullets and links verbatim). Conflicts with the documents are called out; the documents take precedence.
+6. **Review mode** ("review this template against our standards and current regulations"): the agent reads the
    template in full, searches related internal standards, checks current regulations on the web, and returns a
    summary, what's covered, a prioritized table of recommended additions (every source marked doc or web),
    possibly outdated items and suggested wording.
@@ -114,9 +123,10 @@ flowchart LR
   container using Open WebUI's own delete code), logs 1 year.
 - **Right to erasure:** `ops/forget-user.sh someone@example.com [--dry-run] [--delete-account]` removes a
   person's chats, agent memory, n8n run records and usage rows, and logs *that* it happened (hash + counts).
-- **Web search sends only a short, model-written search query** to the web search provider through Azure; the
-  agent is instructed never to put document text, file names, project names or people in a query. Results come
-  only from allow-listed domains (federal defaults plus any state or local sites you add).
+- **Web searches (verified and wider) send only a short, model-written search query** to the web search provider through Azure; the
+  agent is instructed never to put document text, file names, project names or people in a query. Verified results come only from
+  allow-listed domains (federal defaults plus any state or local sites you add); wider-web results can come from
+  anywhere and are always labelled as not on the verified list.
 - **Usage without surveillance:** active users and question counts from hashes, never question text.
 - **Daily health message** (Telegram): documents, chunks, images, spreadsheets, last-24 h ingestion,
   files still failing, usage.

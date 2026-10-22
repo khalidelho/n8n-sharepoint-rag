@@ -75,9 +75,9 @@ tutorials and only show up with real documents.
 
 ## Web search next to private documents
 
-- **Keep the two kinds of source visibly apart.** Answers that used the web carry two sections, "From your
-  documents" and "From the web — verify before relying", never mixed in one sentence. When they disagree the
-  answer says so; the documents stay the organization's standard.
+- **Keep the levels of trust visibly apart.** Answers that used the web carry separate sections — "From your
+  documents", "From verified public sources" and "From the wider web — not on the verified list" — never mixed in one
+  sentence. When they disagree the answer says so; documents first, then verified sources, take precedence.
 - **Restrict the web to an allow-list.** On Azure, the `web_search_preview` tool rejects domain filters; the
   `web_search` tool accepts `filters.allowed_domains` and only cites those sites.
 - **Use the web only when needed.** The agent searches the web for *current* regulations, changes or best
@@ -85,6 +85,15 @@ tutorials and only show up with real documents.
 - **A review mode is mostly instructions.** Read the template in full, search related internal standards,
   check current regulations, then return a fixed structure (covered / add / outdated / suggested wording) where
   every recommendation names its source. No new infrastructure needed.
+
+- **Route the question before the agent.** A rule like "use the web for current information" was ignored even when
+  phrased as MUST; raising the model's reasoning effort didn't help and doubled simple answers' latency. One small
+  classification call before the agent, turned into a per-question instruction, made tool use reliable.
+- **Don't let the model file sources.** Given pre-sorted findings, the model still moved bullets between "verified"
+  and "wider web" and dropped links. Have the agent return its tool calls (intermediate steps) and append the web
+  sections in code, verbatim — the labels are then guaranteed, not requested.
+- **n8n's Code-node sandbox has no `URL` class.** `new URL()` threw inside a try/catch, so every host looked
+  unverified and the bug was silent. Parse hosts with a pattern, and test the classification on real output.
 
 ## Evaluating alternatives
 
