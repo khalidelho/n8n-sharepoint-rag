@@ -4,16 +4,20 @@
 #   scripts/check-leaks.sh            scan the working tree (tracked + new files)
 #   scripts/check-leaks.sh --staged   scan exactly what is about to be committed
 #
-# Two lists:
+# Three lists:
 #   1. generic secret/identifier shapes (below) — fine to publish
-#   2. a private deny list of words and IDs (employer, tenant, site, resource names, chat IDs)
-#      in ${PRIVATE_RAG_DENYLIST:-~/.config/private-rag/denylist.txt} — kept OUTSIDE the repo,
-#      because the list itself is what must not be published
+#   2. a private deny list of words and IDs (employer, tenant, site, resource names, chat IDs) that no
+#      repo may contain, in ${PRIVATE_RAG_DENYLIST:-~/.config/private-rag/denylist.txt}
+#   3. a public-output deny list (the author's own handle, home path, hostname, launchd label prefix),
+#      which private repos need but public output must not carry, in
+#      ${PRIVATE_RAG_DENYLIST_PUBLIC:-~/.config/private-rag/denylist-public.txt}
+#   Both private lists are kept OUTSIDE the repo, because the lists themselves must not be published.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 scope=(--untracked); [ "${1:-}" = "--staged" ] && scope=(--cached)
 deny="${PRIVATE_RAG_DENYLIST:-$HOME/.config/private-rag/denylist.txt}"
+deny_public="${PRIVATE_RAG_DENYLIST_PUBLIC:-$HOME/.config/private-rag/denylist-public.txt}"
 found=0
 
 guid='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
@@ -39,12 +43,17 @@ for pat in "${generic[@]}"; do
   fi
 done
 
-if [ -f "$deny" ]; then
-  if hits=$(grep -vE '^\s*(#|$)' "$deny" | git grep "${scope[@]}" -nIiE -f /dev/stdin -- .); then
-    echo "✗ matches the private deny list:"; echo "$hits" | sed 's/^/    /'; found=1
+# Both private lists apply here: this repo's output is public, so the author's own identifiers go too.
+for list in "$deny" "$deny_public"; do
+  if [ -f "$list" ]; then
+    terms=$(grep -vE '^\s*(#|$)' "$list" || true)   # empty list = nothing more to block (git grep -f "" would match every line)
+    [ -n "$terms" ] || continue
+    if hits=$(printf '%s\n' "$terms" | git grep "${scope[@]}" -nIiE -f /dev/stdin -- .); then
+      echo "✗ matches the private deny list ($list):"; echo "$hits" | sed 's/^/    /'; found=1
+    fi
+  elif [ "${ALLOW_NO_DENYLIST:-}" != "1" ]; then
+    echo "✗ private deny list not found at $list — refusing (set ALLOW_NO_DENYLIST=1 to skip it)"; found=1
   fi
-elif [ "${ALLOW_NO_DENYLIST:-}" != "1" ]; then
-  echo "✗ private deny list not found at $deny — refusing (set ALLOW_NO_DENYLIST=1 to skip it)"; found=1
-fi
+done
 
 [ $found -eq 0 ] && echo "✓ no leaks found" || { echo; echo "Fix the lines above (or use placeholders) and try again."; exit 1; }
