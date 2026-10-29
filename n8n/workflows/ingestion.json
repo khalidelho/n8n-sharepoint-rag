@@ -3060,7 +3060,8 @@
     "saveDataErrorExecution": "all",
     "saveManualExecutions": true,
     "saveExecutionProgress": false,
-    "executionTimeout": 1800
+    "executionTimeout": 1800,
+    "errorWorkflow": "ragErrorReport01"
   },
   "active": false
 }

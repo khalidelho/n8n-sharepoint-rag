@@ -1,0 +1,106 @@
+{
+  "id": "ragPageSearch001",
+  "name": "RAG – Page search",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "query"
+            }
+          ]
+        }
+      },
+      "id": "f5595062-3f5a-5243-ac4a-fc5a8aaf42e3",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:18500/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: $json.query, k: 8 }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "719bee0c-a377-54a7-a91d-1b1149811d07",
+      "name": "Vision service: search pages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn the vision service's ranked pages into a short list the agent can act on (no long text: keeps tokens low).\nconst r = $input.first().json;\nif (r.error || !Array.isArray(r.results)) return [{ json: { response: 'VISUAL SEARCH UNAVAILABLE: the local vision service did not respond. '\n  + 'Tell the user you could not check the drawings/page images right now. Do NOT say a sheet, figure or page does not exist.' } }];\nif (!r.results.length) return [{ json: { response: 'No matching pages found.' } }];\nconst lines = r.results.map((p, i) => {\n  const where = p.best_view === 'tile' ? ` (closest match: zoomed tile ${p.tile_ix})` : '';\n  const why = (p.why || []).length ? ` — matched ${p.why.join('; ')}` : '';\n  const snip = p.snippet ? `\\n   text on page: ${p.snippet.slice(0, 140)}` : '';\n  return `${i + 1}. ${p.file_name} — page ${p.page_no}${where} — ref ${p.ref}${why}${snip}`;\n});\nreturn [{ json: { response: 'Best-matching pages (found by how they look, by sheet/figure numbers and by keywords). '\n  + 'To read one, call look_at_pages with its ref.\\n' + lines.join('\\n') } }];"
+      },
+      "id": "6445c7c2-4448-5047-8d49-669caa61606a",
+      "name": "Format for the agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Page search (tool: search_pages)\nAsks the local vision service for the pages that best match a question.\nIt fuses three signals: **how the page looks** (image embeddings of whole pages, drawing-sheet tiles and title blocks), **sheet / figure / chart numbers** (exact text from the title block or page), and **keywords**.\nReturns refs like `file_id:page[:tile]` for look_at_pages. Runs on the Mac; nothing leaves it.",
+        "height": 300,
+        "width": 620,
+        "color": 7
+      },
+      "id": "58dcf464-835e-58f0-9d20-5b088ab02047",
+      "name": "Page search",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -340
+      ]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Vision service: search pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vision service: search pages": {
+      "main": [
+        [
+          {
+            "node": "Format for the agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "errorWorkflow": "ragErrorReport01"
+  },
+  "active": false
+}

@@ -233,7 +233,7 @@
       },
       "parameters": {
         "httpMethod": "POST",
-        "path": "rag-chat",
+        "path": "rag-chat-v1",
         "authentication": "headerAuth",
         "responseMode": "lastNode",
         "responseData": "firstEntryJson",
@@ -506,7 +506,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Question router, step 3: turn the classification into an instruction appended to the agent's system message\n// for THIS question only (it is not stored in chat memory). If routing failed, no note — the agent decides itself.\nconst src = $('Build routing request').item.json;\nlet route = { web: 'none', review: false };\ntry { route = JSON.parse($json.choices?.[0]?.message?.content ?? '{}'); } catch (e) {}\nlet note = '';\nif (route.web === 'none' && !route.review) note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): answer from the documents only — do not call search_web or search_open_web.';\nif (route.review) note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): this is a review-mode request — follow rule 9, including its web steps.';\nif (route.web === 'verified' || route.web === 'verified_and_open') {\n  note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): after searching the documents you MUST call search_web' +\n    (route.web === 'verified_and_open' ? ', then search_open_web,' : '') + ' and answer with the labelled sections from rule 8.';\n}\nconst { routerBody, ...rest } = src;\nreturn { json: { ...rest, route, routingNote: note } };"
+        "jsCode": "// Question router, step 3: turn the classification into an instruction appended to the agent's system message\n// for THIS question only (it is not stored in chat memory). If routing failed, no note — the agent decides itself.\nconst src = $('Build routing request').item.json;\nlet route = {};                                   // unparsable / failed routing → no note at all\ntry { route = JSON.parse($json.choices?.[0]?.message?.content ?? '{}') ?? {}; } catch (e) {}\nlet note = '';\nif (route.web === 'none' && !route.review) note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): answer from the documents only — do not call search_web or search_open_web.';\nif (route.review) note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): this is a review-mode request — follow rule 9, including its web steps.';\nif (route.web === 'verified' || route.web === 'verified_and_open') {\n  note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): after searching the documents you MUST call search_web' +\n    (route.web === 'verified_and_open' ? ', then search_open_web,' : '') + ' and answer with the labelled sections from rule 8.';\n}\nconst { routerBody, ...rest } = src;\nreturn { json: { ...rest, route, routingNote: note } };"
       },
       "id": "9ccb8a20-f6d5-40e6-942a-c6f3ec3701ff",
       "name": "Add routing note",
@@ -711,7 +711,8 @@
   },
   "settings": {
     "executionOrder": "v1",
-    "binaryMode": "separate"
+    "binaryMode": "separate",
+    "errorWorkflow": "ragErrorReport01"
   },
   "active": false
 }

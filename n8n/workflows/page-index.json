@@ -1,0 +1,542 @@
+{
+  "id": "ragPageIndex0001",
+  "name": "RAG – Page index",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "5c1ed0ef-5bb0-55c5-9616-b5741f0807b8",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "cacf209c-8846-54b6-942d-52f661aebce6",
+      "name": "Run now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:18500/prune",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "d53a942c-1c2f-58c3-881f-ac9fb68979dc",
+      "name": "Prune deleted files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        60,
+        80
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:18500/assign_pages",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ only_missing: true }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "4fa6297f-a4d8-57e6-b76b-aee694778320",
+      "name": "Page numbers for new passages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        150,
+        80
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- rebuilds library_terms only when documents changed (sql/phase10_library_vocabulary.sql)\nselect public.refresh_library_terms() as result;",
+        "options": {}
+      },
+      "id": "6677e8fe-53c4-5c9e-8ee4-ec21093cfc9f",
+      "name": "Refresh library vocabulary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        195,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select m.file_id, m.file_name, m.content_hash,\n       lower(substring(m.file_name from '\\.([^./]+)$')) as extension,\n       (s.status = 'ok' and s.content_hash is not distinct from m.content_hash) as source_only\nfrom document_metadata m\nleft join page_index_status s on s.file_id = m.file_id\nwhere lower(substring(m.file_name from '\\.([^./]+)$')) in ('pdf','docx','doc','pptx','jpg','jpeg','png','tif','tiff')\n  and m.file_name !~* '(^|/)old_|do not use'\n  and (s.file_id is null\n       or s.content_hash is distinct from m.content_hash\n       or (s.status = 'failed' and s.updated_at < now() - interval '6 hours')\n       or (s.status = 'queued' and s.updated_at < now() - interval '3 hours')\n       or (s.status = 'ok' and not s.has_source))      -- keep the original for full-resolution zooms\norder by m.file_name\nlimit 6",
+        "options": {}
+      },
+      "id": "39127848-c2ee-5072-b9f3-976b758f8ca0",
+      "name": "Files to index",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      },
+      "executeOnce": false,
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.microsoft.com/v1.0/sites/__SHAREPOINT_SITE_ID__/drive/items/{{ $json.file_id }}/content",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftOAuth2Api",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "b6e58ccf-6c12-52d0-9b32-5a4009e99860",
+      "name": "Graph – download file",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        80
+      ],
+      "credentials": {
+        "microsoftOAuth2Api": {
+          "name": "Microsoft Graph – RAG"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into page_index_status (file_id, file_name, content_hash, status, message, updated_at)\nvalues ($1, $2, $3, 'failed', $4, now())\non conflict (file_id) do update set content_hash = excluded.content_hash, status = 'failed',\n  message = excluded.message, updated_at = now()",
+        "options": {
+          "queryReplacement": "={{ [ $('Files to index').item.json.file_id, $('Files to index').item.json.file_name, $('Files to index').item.json.content_hash, 'SharePoint download failed: ' + String($json.error?.message || $json.error || 'unknown').slice(0, 300) ] }}"
+        }
+      },
+      "id": "7057a249-28c4-5b0d-aa31-81d7a64a7e53",
+      "name": "Record download failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        700,
+        260
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ ['docx','doc','pptx'].includes($('Files to index').item.json.extension) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "o1"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "office"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "pdf_or_image"
+        }
+      },
+      "id": "de89559c-433e-5c88-b45e-f75284e70928",
+      "name": "Office or not?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        700,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Gotenberg picks its converter from the file extension; SharePoint names with apostrophes etc. arrive mangled\n// (\"no form file found for extensions\"). Same fix as ingestion: upload as document.<ext>.\nconst item = $input.item;\nitem.binary.data.fileName = `document.${$('Files to index').item.json.extension}`;\nreturn item;"
+      },
+      "id": "f38f5789-00a0-56cc-9e1a-6b4ddc6e8a41",
+      "name": "Safe upload name",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://gotenberg:3000/forms/libreoffice/convert",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "583b41bc-e101-5153-80a3-d6c680d5e440",
+      "name": "Gotenberg: convert to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        -20
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into page_index_status (file_id, file_name, content_hash, status, message, updated_at)\nvalues ($1, $2, $3, 'failed', $4, now())\non conflict (file_id) do update set content_hash = excluded.content_hash, status = 'failed',\n  message = excluded.message, updated_at = now()",
+        "options": {
+          "queryReplacement": "={{ [ $('Files to index').item.json.file_id, $('Files to index').item.json.file_name, $('Files to index').item.json.content_hash, 'Office to PDF conversion failed: ' + String($json.error?.message || $json.error || 'unknown').slice(0, 300) ] }}"
+        }
+      },
+      "id": "3f45c06f-50d2-545e-98e2-d4fd21460264",
+      "name": "Record conversion failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1360,
+        -160
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:18500/index",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "file_id",
+              "value": "={{ $('Files to index').item.json.file_id }}"
+            },
+            {
+              "name": "file_name",
+              "value": "={{ $('Files to index').item.json.file_name }}"
+            },
+            {
+              "name": "content_hash",
+              "value": "={{ $('Files to index').item.json.content_hash }}"
+            },
+            {
+              "name": "ext",
+              "value": "pdf"
+            },
+            {
+              "name": "source_only",
+              "value": "={{ $('Files to index').item.json.source_only ? 'true' : 'false' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "31693e22-33d4-58c6-b83b-80a9c20675a3",
+      "name": "Send PDF to vision service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        -20
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:18500/index",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "file_id",
+              "value": "={{ $('Files to index').item.json.file_id }}"
+            },
+            {
+              "name": "file_name",
+              "value": "={{ $('Files to index').item.json.file_name }}"
+            },
+            {
+              "name": "content_hash",
+              "value": "={{ $('Files to index').item.json.content_hash }}"
+            },
+            {
+              "name": "ext",
+              "value": "={{ $('Files to index').item.json.extension }}"
+            },
+            {
+              "name": "source_only",
+              "value": "={{ $('Files to index').item.json.source_only ? 'true' : 'false' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "44290947-5601-57b2-883b-374ffc11d8cf",
+      "name": "Send file to vision service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        180
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Page index (feeds visual search)\nEvery 15 minutes: finds SharePoint files whose pages aren't indexed yet (new, changed — content hash differs — or a failed/stuck attempt), downloads them, converts Office files to PDF, and hands them to the **local vision service**, which renders every page (plus tiles + title block for drawing sheets), turns scans upright, embeds them on the Mac's GPU and stores them in `page_views`. 6 files per run; the service works through its queue in the background.",
+        "height": 300,
+        "width": 760,
+        "color": 7
+      },
+      "id": "855159ea-2d24-5be7-afe2-aba5c59e881b",
+      "name": "Page index",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -340
+      ]
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Prune deleted files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now": {
+      "main": [
+        [
+          {
+            "node": "Prune deleted files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prune deleted files": {
+      "main": [
+        [
+          {
+            "node": "Page numbers for new passages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Page numbers for new passages": {
+      "main": [
+        [
+          {
+            "node": "Refresh library vocabulary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh library vocabulary": {
+      "main": [
+        [
+          {
+            "node": "Files to index",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Files to index": {
+      "main": [
+        [
+          {
+            "node": "Graph – download file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Graph – download file": {
+      "main": [
+        [
+          {
+            "node": "Office or not?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record download failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Office or not?": {
+      "main": [
+        [
+          {
+            "node": "Safe upload name",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send file to vision service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Safe upload name": {
+      "main": [
+        [
+          {
+            "node": "Gotenberg: convert to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gotenberg: convert to PDF": {
+      "main": [
+        [
+          {
+            "node": "Send PDF to vision service",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record conversion failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "errorWorkflow": "ragErrorReport01"
+  },
+  "active": false
+}

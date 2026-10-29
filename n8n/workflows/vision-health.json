@@ -1,0 +1,195 @@
+{
+  "id": "ragVisionHealth1",
+  "name": "RAG – Vision health",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "78bb1d3d-6c73-5e62-bc17-d4e7b4d75eec",
+      "name": "Every 2 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "935630c5-6e1c-523b-b928-3ecb0bf64501",
+      "name": "Manual test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:18500/status",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "cf5d0576-7bb6-5569-a4d5-fbfa82c65603",
+      "name": "Vision service status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        80
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  (select count(*) from page_index_status where status = 'ok') as ok_files,\n  (select count(*) from page_index_status where status = 'failed') as failed_files,\n  (select count(*) from page_index_status where status in ('queued', 'indexing') and updated_at < now() - interval '2 hours') as stuck_files,\n  (select count(*) from document_metadata m\n    where lower(substring(m.file_name from '\\.([^./]+)$')) in ('pdf','docx','doc','pptx','jpg','jpeg','png','tif','tiff')\n      and m.file_name !~* '(^|/)old_|do not use'\n      and not exists (select 1 from page_index_status s where s.file_id = m.file_id and s.status = 'ok'\n                      and s.content_hash is not distinct from m.content_hash)) as not_indexed,\n  (select count(*) from page_views) as views,\n  (select string_agg(left(file_name, 60) || ': ' || left(coalesce(message, ''), 90), E'\\n')\n     from (select file_name, message from page_index_status where status = 'failed' order by updated_at desc limit 3) f) as failed_examples",
+        "options": {}
+      },
+      "id": "4aea7617-b13a-5d5f-9d10-ad9907317908",
+      "name": "Vision numbers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        480,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Alert only when something is wrong; the 8:00 run always sends a one-line summary. No question text, no names.\nconst st = $('Vision service status').first().json;\nconst n = $input.first().json;\nconst up = !st.error && typeof st.queued === 'number';\nconst problems = [];\nif (!up) problems.push('the vision service is NOT responding (launchctl kickstart -k gui/$(id -u)/com.example.rag-vision; log ~/Library/Logs/rag-vision.log)');\nif (Number(n.failed_files) > 0) problems.push(`${n.failed_files} file(s) failed to index:\\n${n.failed_examples || ''}`);\nif (Number(n.stuck_files) > 0) problems.push(`${n.stuck_files} file(s) stuck in the queue for 2+ hours`);\nconst hour = new Date().getHours();\nif (!problems.length && hour !== 8) return [];\nconst esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst head = problems.length ? '⚠️ <b>Visual search needs attention</b>' : '✅ <b>Visual search OK</b>';\nconst line = `${Number(n.ok_files)} files indexed (${Number(n.views).toLocaleString('en-US')} page views)` +\n  (up ? `, queue ${st.queued}` : '') + (Number(n.not_indexed) ? `, ${n.not_indexed} waiting` : '');\nreturn [{ json: { text: [head, esc(line), ...problems.map(p => '• ' + esc(p))].join('\\n') } }];"
+      },
+      "id": "6dfb9f20-65f7-569e-bc93-c73fde3d2541",
+      "name": "Write the alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "__TELEGRAM_CHAT_ID__",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "854a6053-4759-5316-b291-342ac76cecea",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        80
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram – health bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Vision health (every 2 hours)\nChecks the local vision service and the page index. Sends a Telegram alert only when the service is down, files failed to index, or files are stuck in the queue; the 8:00 run always sends a one-line summary.",
+        "height": 260,
+        "width": 700,
+        "color": 7
+      },
+      "id": "8019f280-206d-5306-b000-b30024cab648",
+      "name": "Vision health",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -300
+      ]
+    }
+  ],
+  "connections": {
+    "Every 2 hours": {
+      "main": [
+        [
+          {
+            "node": "Vision service status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vision service status": {
+      "main": [
+        [
+          {
+            "node": "Vision numbers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vision numbers": {
+      "main": [
+        [
+          {
+            "node": "Write the alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write the alert": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual test": {
+      "main": [
+        [
+          {
+            "node": "Vision service status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "errorWorkflow": "ragErrorReport01"
+  },
+  "active": false
+}
