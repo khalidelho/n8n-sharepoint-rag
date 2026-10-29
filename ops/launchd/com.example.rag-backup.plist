@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Nightly RAG backup: ops/backup.sh at 03:40, a missed run fires on wake. The only host-specific file; on a Linux
+     server the same script runs from one cron line. backup.sh sets its own PATH (Docker Desktop CLI, Homebrew).
+     /bin/bash is fine as long as the repo and ~/rag-backups are outside macOS's privacy-protected folders
+     (Documents, Desktop, Downloads); otherwise use an interpreter that has Full Disk Access.
+     launchd does not expand ~ or $HOME, so fill in the placeholders when installing (from the repo root):
+       sed -e "s#__REPO__#$PWD#g" -e "s#__HOME__#$HOME#g" ops/launchd/com.example.rag-backup.plist \
+         > ~/Library/LaunchAgents/com.example.rag-backup.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.rag-backup.plist
+     Remove:   launchctl bootout gui/$(id -u)/com.example.rag-backup; rm ~/Library/LaunchAgents/com.example.rag-backup.plist -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.rag-backup</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__REPO__/ops/backup.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>__REPO__</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>3</integer>
+		<key>Minute</key>
+		<integer>40</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/rag-backup.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/rag-backup.log</string>
+</dict>
+</plist>
