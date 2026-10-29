@@ -1,0 +1,13 @@
+# Vision service (Python 3.12, Apple Silicon: PyTorch uses the GPU through MPS). Versions as tested.
+# Also needs Tesseract on the PATH for scanned pages:  brew install tesseract
+fastapi==0.159.1
+uvicorn==0.54.0
+python-multipart==0.0.32
+psycopg[binary]==3.3.6
+pypdfium2==5.14.0
+pillow==13.0.0
+numpy==2.5.4
+torch==2.14.1
+sentence-transformers==6.2.0
+transformers==5.20.2
+accelerate==1.15.0

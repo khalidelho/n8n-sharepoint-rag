@@ -10,3 +10,10 @@ secrets*
 *.bak
 .DS_Store
 __pycache__/
+# Local services: virtualenvs, rendered pages, kept originals, models, logs
+.venv/
+vision/pages/
+vision/sources/
+vision/staging/
+*.gguf
+*.log
