@@ -1,5 +1,5 @@
 # Open WebUI — the ChatGPT-style front end. Its only "model" is the n8n agent, reached through
-# the Knowledge Assistant pipe function (open-webui/knowledge_assistant_pipe.py), which calls
+# the Knowledge Assistant pipe function (open-webui/functions/knowledge_assistant.py), which calls
 # http://host.docker.internal:5680/webhook/rag-chat.
 
 name: rag-openwebui

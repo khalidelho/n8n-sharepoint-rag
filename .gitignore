@@ -17,3 +17,5 @@ vision/sources/
 vision/staging/
 *.gguf
 *.log
+# Eval question sets and results are written from a private library: keep them out of this repo
+evals/
