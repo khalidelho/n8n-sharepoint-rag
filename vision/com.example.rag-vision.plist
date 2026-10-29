@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Local vision service (visual page search) as a macOS LaunchAgent: starts at login, restarts if it stops.
+     launchd does not expand ~ or $HOME, so fill in the two placeholders when installing (run from the repo root):
+       sed -e "s#__REPO__#$PWD#g" -e "s#__HOME__#$HOME#g" vision/com.example.rag-vision.plist \
+         > ~/Library/LaunchAgents/com.example.rag-vision.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.rag-vision.plist
+     Restart: launchctl kickstart -k gui/$(id -u)/com.example.rag-vision
+     The model is downloaded once (run service.py by hand first); the OFFLINE flags then keep it from calling home. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.rag-vision</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__REPO__/vision/.venv/bin/python</string>
+		<string>-u</string>
+		<string>__REPO__/vision/service.py</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__REPO__/vision</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/bin:/bin</string>
+		<key>PYTORCH_ENABLE_MPS_FALLBACK</key>
+		<string>1</string>
+		<key>HF_HUB_OFFLINE</key>
+		<string>1</string>
+		<key>TRANSFORMERS_OFFLINE</key>
+		<string>1</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/rag-vision.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/rag-vision.log</string>
+</dict>
+</plist>

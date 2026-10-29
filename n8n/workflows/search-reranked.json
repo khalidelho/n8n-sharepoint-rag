@@ -71,7 +71,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// The 25 passages closest in MEANING to the query — now let GPT judge which actually ANSWER it.\nconst query = $('When Executed by Another Workflow').first().json.query;\nconst passages = $input.all().map((it, i) => ({\n  i,\n  file_name: it.json.document?.metadata?.file_name,\n  file_id: it.json.document?.metadata?.file_id,\n  chunk_index: it.json.document?.metadata?.chunk_index,\n  similarity: it.json.score,\n  content: it.json.document?.pageContent ?? '',\n}));\n\n// Show GPT the first 3,000 characters of each passage (headings + opening are enough to judge relevance)\nconst listing = passages.map(p => `[${p.i}] (${p.file_name})\\n${p.content.slice(0, 3000)}`).join('\\n\\n---\\n\\n');\n\nconst prompt = `You are ranking search results for a question.\nQuestion: ${query}\n\nBelow are ${passages.length} passages, numbered [n]. Choose up to 4 that most DIRECTLY help answer the question, best first.\nPrefer passages containing the actual answer (steps, values, definitions, requirements) over passages that are only on a similar topic.\nReturn ONLY json: {\"best\": [n, n, ...]}. If none of them helps answer the question, return {\"best\": []}.\n\n${listing}`;\n\nreturn [{ json: { prompt, passages } }];"
+        "jsCode": "// The 25 passages closest in MEANING to the query — now let GPT judge which actually ANSWER it.\nconst query = $('When Executed by Another Workflow').first().json.query;\nconst passages = $input.all().map((it, i) => ({\n  i,\n  file_name: it.json.document?.metadata?.file_name,\n  file_id: it.json.document?.metadata?.file_id,\n  chunk_index: it.json.document?.metadata?.chunk_index,\n  page_start: it.json.document?.metadata?.page_start,      // page numbers matched by the vision service (pages.py)\n  page_end: it.json.document?.metadata?.page_end,\n  page_best: it.json.document?.metadata?.page_best,     // the single best page: what look_at_pages opens\n  similarity: it.json.score,\n  content: it.json.document?.pageContent ?? '',\n}));\n\n// Show GPT the first 3,000 characters of each passage (headings + opening are enough to judge relevance)\nconst listing = passages.map(p => `[${p.i}] (${p.file_name})\\n${p.content.slice(0, 3000)}`).join('\\n\\n---\\n\\n');\n\nconst prompt = `You are ranking search results for a question.\nQuestion: ${query}\n\nBelow are ${passages.length} passages, numbered [n]. Choose up to 4 that most DIRECTLY help answer the question, best first.\nPrefer passages containing the actual answer (steps, values, definitions, requirements) over passages that are only on a similar topic.\nReturn ONLY json: {\"best\": [n, n, ...]}. If none of them helps answer the question, return {\"best\": []}.\n\n${listing}`;\n\n// the local reranker reads the first 1,500 characters (3,000 was slower and no better; evals/rerank, 2026-10-24)\nconst docs = passages.map(p => p.content.slice(0, 1500));\nreturn [{ json: { prompt, passages, query, docs } }];"
       },
       "id": "0e6b3605-d60a-48df-9016-2d60dba42a33",
       "name": "Build rerank prompt",
@@ -85,7 +85,7 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "={{ $json.prompt }}",
+        "text": "={{ $('Build rerank prompt').first().json.prompt }}",
         "batching": {}
       },
       "id": "eb9f94b8-d378-4463-b493-a4e5ae9165f7",
@@ -127,7 +127,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Turn GPT's choice into the tool's answer. If its reply is unusable, fall back to plain vector order —\n// a search must never fail just because the reranker did.\nconst { passages } = $('Build rerank prompt').first().json;\nconst reply = $input.first().json;\n\nlet parsed = reply;                                         // n8n usually parses JSON replies already…\nif (!Array.isArray(parsed.best)) {                          // …older versions give raw text\n  try { parsed = JSON.parse(reply.text ?? reply.response ?? '{}'); } catch (e) { parsed = {}; }\n}\nlet best = Array.isArray(parsed.best)\n  ? parsed.best.map(Number).filter(n => Number.isInteger(n) && passages[n])\n  : null;\nconst reranked = best !== null;\nif (!reranked) best = [0, 1, 2, 3].filter(n => passages[n]);\n\nconst results = [...new Set(best)].slice(0, 4).map(n => ({\n  file_name: passages[n].file_name,\n  file_id: passages[n].file_id,\n  chunk_index: passages[n].chunk_index,\n  content: passages[n].content,                            // full text, image links included\n}));\nreturn [{ json: { reranked, candidates: passages.length, picked: [...new Set(best)].slice(0, 4), results } }];"
+        "jsCode": "// FALLBACK path: runs when the local reranker is unreachable, replies badly, or keeps nothing (off-topic or borderline).\n// Turn GPT's choice into the tool's answer. If its reply is unusable, fall back to plain vector order —\n// a search must never fail just because the reranker did.\nconst { passages } = $('Build rerank prompt').first().json;\nconst reply = $input.first().json;\n\nlet parsed = reply;                                         // n8n usually parses JSON replies already…\nif (!Array.isArray(parsed.best)) {                          // …older versions give raw text\n  try { parsed = JSON.parse(reply.text ?? reply.response ?? '{}'); } catch (e) { parsed = {}; }\n}\nlet best = Array.isArray(parsed.best)\n  ? parsed.best.map(Number).filter(n => Number.isInteger(n) && passages[n])\n  : null;\nconst reranked = best !== null;\nif (!reranked) best = [0, 1, 2, 3].filter(n => passages[n]);\n\nconst results = [...new Set(best)].slice(0, 4).map(n => ({\n  file_name: passages[n].file_name,\n  file_id: passages[n].file_id,\n  chunk_index: passages[n].chunk_index,\n  // pages this passage came from: cite them (\"p. 14-16\"); page_ref opens the page with look_at_pages\n  page_range: passages[n].page_start == null ? undefined\n    : (passages[n].page_start === passages[n].page_end ? `${passages[n].page_start}` : `${passages[n].page_start}-${passages[n].page_end}`),\n  page_ref: passages[n].page_start == null ? undefined : `${passages[n].file_id}:${passages[n].page_best ?? passages[n].page_start}`,\n  content: passages[n].content,                            // full text, image links included\n}));\nreturn [{ json: { reranked, ranker: reranked ? 'gpt' : 'vector', candidates: passages.length, picked: [...new Set(best)].slice(0, 4), results } }];"
       },
       "id": "45c4620a-c42a-41b6-bebb-c39339c578fb",
       "name": "Return best passages",
@@ -148,10 +148,90 @@
         0
       ],
       "parameters": {
-        "content": "## RAG – Search (reranked)\nCalled by the chat agent's **search_documents** tool.\n\n1. Finds the **25 passages** closest in meaning to the question (pgvector in Supabase, same embedding model as ingestion).\n2. **GPT-5.4 mini** reads the question and each passage and keeps **up to 4** that actually answer it — similar is not the same as useful (cover pages and title slides score high otherwise).\n3. If GPT's reply is unusable, falls back to plain vector order, so search never fails.\n\nMust stay **published**: the agent can only call published workflows.",
+        "content": "## RAG – Search (reranked)\nCalled by the chat agent's **search_documents** tool.\n\n1. Finds the **25 passages** closest in meaning to the question (pgvector in Supabase, same embedding model as ingestion).\n2. The **local reranker** (bge-reranker-v2-m3 on this machine, port 18501) scores each passage against the question; the best **up to 4** are kept (blended with vector similarity; off-topic passages dropped). **GPT-5.4 mini** decides instead when the local reranker is down, replies badly, or keeps nothing (off-topic or borderline questions) — similar is not the same as useful (cover pages and title slides score high otherwise).\n3. If GPT's reply is unusable, falls back to plain vector order, so search never fails.\n\nMust stay **published**: the agent can only call published workflows.",
         "height": 650,
         "width": 1240,
         "color": 6
+      }
+    },
+    {
+      "id": "9beb012c-2257-5807-842f-6c9f31483746",
+      "name": "Rerank locally (bge)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        -10
+      ],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:18501/v1/rerank",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: $json.query, documents: $json.docs, top_n: $json.docs.length }) }}",
+        "options": {
+          "timeout": 6000
+        }
+      }
+    },
+    {
+      "id": "d85fa75a-11e0-5532-a62d-5948b92e7b7a",
+      "name": "Return best passages (local)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        -10
+      ],
+      "parameters": {
+        "jsCode": "// Format the local reranker's picks exactly like the GPT path does.\nconst { passages } = $('Build rerank prompt').first().json;\nconst best = $json.best;\nconst results = best.map(n => ({\n  file_name: passages[n].file_name,\n  file_id: passages[n].file_id,\n  chunk_index: passages[n].chunk_index,\n  // pages this passage came from: cite them (\"p. 14-16\"); page_ref opens the page with look_at_pages\n  page_range: passages[n].page_start == null ? undefined\n    : (passages[n].page_start === passages[n].page_end ? `${passages[n].page_start}` : `${passages[n].page_start}-${passages[n].page_end}`),\n  page_ref: passages[n].page_start == null ? undefined : `${passages[n].file_id}:${passages[n].page_best ?? passages[n].page_start}`,\n  content: passages[n].content,                            // full text, image links included\n}));\nreturn [{ json: { reranked: true, ranker: 'local', candidates: passages.length, picked: best, results } }];"
+      }
+    },
+    {
+      "id": "2f36d470-6855-5df1-a12b-de329006c659",
+      "name": "Local picks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        -10
+      ],
+      "parameters": {
+        "jsCode": "// Local reranker (bge-reranker-v2-m3 on this machine: no Azure tokens, ~1.4 s). Score = reranker score + 10 x the\n// vector similarity; passages scoring below -3.5 are dropped. Measured on 64 questions (evals/rerank, 2026-10-24):\n// right file in the top 4 83% vs GPT 78%; first place 66% vs 72%.\n// Nothing kept (an off-topic question, or a borderline one: R13 scored below -3.5 yet was answerable), or an unusable\n// reply -> the GPT reranker decides instead (Scrutiny 2026-10-24). GPT returns nothing for off-topic questions.\nconst { passages } = $('Build rerank prompt').first().json;\nconst res = Array.isArray($json.results) ? $json.results : null;\nconst best = !res ? [] : res\n  .filter(r => Number.isInteger(r.index) && passages[r.index] && typeof r.relevance_score === 'number' && r.relevance_score >= -3.5)\n  .map(r => ({ n: r.index, s: r.relevance_score + 10 * (Number(passages[r.index].similarity) || 0) }))\n  .sort((a, b) => b.s - a.s).slice(0, 4).map(x => x.n);\nreturn [{ json: { best } }];"
+      }
+    },
+    {
+      "id": "bda54e2c-e55d-5d1d-b034-ad9765996439",
+      "name": "Kept any?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        780,
+        -10
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "kept-any",
+              "leftValue": "={{ $json.best.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       }
     }
   ],
@@ -193,7 +273,7 @@
       "main": [
         [
           {
-            "node": "Rerank with GPT",
+            "node": "Rerank locally (bge)",
             "type": "main",
             "index": 0
           }
@@ -221,11 +301,59 @@
           }
         ]
       ]
+    },
+    "Rerank locally (bge)": {
+      "main": [
+        [
+          {
+            "node": "Local picks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rerank with GPT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Local picks": {
+      "main": [
+        [
+          {
+            "node": "Kept any?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kept any?": {
+      "main": [
+        [
+          {
+            "node": "Return best passages (local)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rerank with GPT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1",
-    "binaryMode": "separate"
+    "binaryMode": "separate",
+    "errorWorkflow": "ragErrorReport01"
   },
   "active": false
 }

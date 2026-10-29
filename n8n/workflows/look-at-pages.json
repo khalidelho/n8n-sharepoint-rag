@@ -1,0 +1,616 @@
+{
+  "id": "ragLookPages0001",
+  "name": "RAG – Look at pages",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "question"
+            },
+            {
+              "name": "pages"
+            }
+          ]
+        }
+      },
+      "id": "f5595062-3f5a-5243-ac4a-fc5a8aaf42e3",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pages come from the agent as a comma/space-separated list of refs from search_pages: file_id:page[:tile]\nconst q = $json.question || '';\nconst refs = String($json.pages || '').split(/[\\s,;]+/).map(s => s.trim()).filter(s => /^[A-Za-z0-9!_-]+:\\d+(:\\d+)?$/.test(s)).slice(0, 4);\nreturn [{ json: { question: q, refs } }];"
+      },
+      "id": "9b0cde3f-14f7-58df-a7a5-776b4fe23b38",
+      "name": "Parse page refs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:18500/images",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ pages: $json.refs, question: $json.question, max_images: 16, max_side: 2048, tile_max_side: 1100 }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "2a28b4e6-3151-5086-9a5a-a4058250861b",
+      "name": "Vision service: page images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const RULES = [\n  'You read pages from an engineering knowledge base: plan sheets, construction details, scanned manuals, charts and photos.',\n  'Answer the question only from what the images show. Quote labels, dimensions, notes and table values exactly as printed.',\n  'Reading a value off a chart or curve: (1) read both axis labels, units and the value of each grid line; (2) find the grid line for the given x value;',\n  '(3) find the named curve. In a FAMILY of curves (e.g. 1, 2, 5, 10, 25, 50, 100-year), curves never cross, so identify them by ORDER: where the labels are printed,',\n  '    list every curve from the bottom up with its label (e.g. \"1st = 1-yr, 2nd = 2-yr, 3rd = 5-yr ...\"); then at the target x count curves from the bottom up to reach the',\n  '    same ordinal. State that count in your answer (e.g. \"the 4th curve from the bottom = 10-year\").',\n  '    CROSS-CHECK: count the curves at the target x too. If there are more curves than labels in your list, you missed a label (small labels on the',\n  '    lowest or most crowded curves are easy to miss, e.g. a \"1\" that looks like \"/\"); find it and redo the order before reading.',\n  '(4) count grid cells from the nearest labelled y value to where the curve crosses;',\n  '(5) give your best estimate, then a range of plus/minus ONE minor grid division around it (e.g. best 5.4, grid 0.2 -> \"about 5.4 in/hr (5.2–5.6)\"), naming the curve and axes;',\n  '(6) always end a chart reading with: \"Read from the chart — verify on the figure (or a published table/equation) before using it for design.\"',\n  'When you get a whole sheet plus zoomed tiles of it, use the tiles for small text, dimensions and notes, and the whole sheet for layout and labels.',\n  'On plans and profiles, identify each structure or material by matching its hatch/fill pattern to the sheet legend, and name its type (e.g. cascade, cobble riffle, riprap) — a station or elevation alone is not a structure.',\n  'If the images do not show the answer, say so plainly. Do not guess and do not use outside knowledge as if it were on the page.',\n  'Cite each fact as (file name, page N). Be concise: a few sentences or a short list.'\n].join('\\n');\nconst describe = imgs => imgs.map((m, i) => `${i + 1}) ${m.file_name}, page ${m.page_no}` +\n  (m.kind === 'tile' ? ` — zoomed tile, row ${Math.floor(m.tile_ix / 4) + 1} of 3, column ${m.tile_ix % 4 + 1} of 4 (tiles overlap slightly)` : '')).join('; ');\n// Pass 1: look at the pages. Answer, or ask for a zoom when a precise reading needs a closer look (charts, tiny text).\nconst imgs = $input.first().json.images || [];\nconst q = $('Parse page refs').first().json.question;\nif ($input.first().json.error) return [{ json: { skip: true, response: 'VISUAL SEARCH UNAVAILABLE: the local vision service did not respond. '\n  + 'Tell the user you could not look at the pages right now. Do NOT say the sheet or figure does not exist.' } }];\nif (!imgs.length) return [{ json: { skip: true, response: 'No page images found for those refs. Use refs exactly as search_pages returned them.' } }];\nconst ZOOM = 'Reply as JSON: {\"answer\": \"...\", \"zoom\": null} or {\"answer\": \"your draft\", \"zoom\": {\"image\": N, \"box\": [x0, y0, x1, y1]}}. '\n  + 'Ask for a zoom (image number, box as fractions 0-1 of that image) whenever you must READ A VALUE OFF A CHART OR CURVE, '\n  + 'or key text/dimensions are too small to read with confidence. For a chart, the box must span the target x from just below the LOWEST curve '\n  + 'to just above the HIGHEST curve (so every curve can be counted from the bottom up) and include the nearest labelled grid values on both axes. '\n  + 'In your draft answer, record the bottom-up order of the curves and which ordinal the named curve is. Otherwise give the final answer with \"zoom\": null.';\nconst content = [{ type: 'text', text: `Question: ${q}\\n\\nImages: ${describe(imgs)}.` }];\nfor (const m of imgs) content.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${m.png_b64}`, detail: 'high' } });\nreturn [{ json: { skip: false, body: { model: 'gpt-5.4-mini', reasoning_effort: 'medium', max_completion_tokens: 6000,\n  response_format: { type: 'json_object' },\n  messages: [{ role: 'system', content: RULES + '\\n' + ZOOM }, { role: 'user', content }] } } }];"
+      },
+      "id": "a08332c5-9803-5291-ae13-bf64608ba1b0",
+      "name": "Build vision request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "59dbf7d7-3696-59ab-b218-55dfd2fee9dc",
+      "name": "Have images?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://__AZURE_AI_HOST__/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "azureOpenAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 75000
+        }
+      },
+      "id": "a2a01567-e6bb-51c2-817a-e640e0bd09b2",
+      "name": "gpt-5.4-mini looks at the pages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        -100
+      ],
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Did pass 1 ask for a zoom? If so, prepare the crop request; otherwise its answer is final.\n// A failed read is not a reading (design part 2; rulings R70, R73): the agent is told what happened and an incident is\n// logged (\"Log incident\" -> RAG – Error reporter). truncated_pass1 = cut off by the token budget (finish_reason \"length\");\n// empty_reply = no text for another reason (stop, content_filter); vision_error = no reply (the Azure call failed).\n// Every failure text ends with \"Tell the user; do not guess.\" (R80). The reason never quotes the question or the reply.\nconst m = $input.first().json;\nconst choice = m.choices?.[0];\nconst raw = choice?.message?.content;\nconst why = (r) => {\n  const c = r.choices?.[0] ?? {}, u = r.usage ?? {}, rt = u.completion_tokens_details?.reasoning_tokens;\n  const fr = String(c.finish_reason ?? 'none').replace(/content_filter/i, 'filter').slice(0, 20);   // the scrub cuts at \"content\"\n  return `finish_reason ${fr}, ${c.message?.content ? 'partial' : 'empty'} reply`\n    + (u.completion_tokens != null ? `, ${Number(u.completion_tokens)} completion tokens` : '')\n    + (rt != null ? ` (${Number(rt)} reasoning)` : '');\n};\nconst errText = (e) => String((e !== null && typeof e === 'object' ? e.message : e) || 'unknown error').replace(/\\s+/g, ' ').trim().slice(0, 120);\nconst failed = (r) => r.error ? `Azure call failed: ${errText(r.error)}` : 'no reply from the model';\nconst failedRead = (response, incident, reason) => [{ json: { zoom: false, response, incident,\n  incident_node: 'gpt-5.4-mini looks at the pages', incident_message: 'first look: ' + reason } }];\nif (choice?.finish_reason === 'length') return failedRead(\"The vision model's reading was cut off; ask a narrower question. Tell the user; do not guess.\", 'truncated_pass1', why(m));\nif (choice && !raw) return failedRead(\"The vision model returned no reading for these pages; try again or ask about a specific detail. Tell the user; do not guess.\", 'empty_reply', why(m));\nif (!raw) return failedRead('The vision model could not read the pages right now' + (m.error ? ' (' + String(m.error.message || m.error).slice(0, 120) + ')' : '') + '. Tell the user; do not guess.',\n  'vision_error', failed(m));\nlet j; try { j = JSON.parse(raw); } catch (e) { return [{ json: { zoom: false, response: raw } }]; }\nconst imgs = $('Vision service: page images').first().json.images || [];\nconst z = j.zoom, idx = z && Number(z.image) - 1, img = imgs[idx];\nif (!z || !img || !Array.isArray(z.box) || z.box.length !== 4) return [{ json: { zoom: false, response: String(j.answer || raw) } }];\nconst [fid, pno] = String(img.ref).split(':');\nreturn [{ json: { zoom: true, draft: String(j.answer || ''), image: idx + 1,\n  crop: { file_id: fid, page_no: Number(pno), kind: img.kind, tile_ix: img.tile_ix ?? null, box: z.box.map(Number), max_side: 1800 } } }];"
+      },
+      "id": "3f90a739-cc75-500c-82d0-8cb84fc02ee0",
+      "name": "Zoom requested?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "z1",
+              "leftValue": "={{ $json.zoom }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3fef68ac-ded8-5116-a8c8-ba6038e7a370",
+      "name": "Zoom?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:18500/crop",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.crop) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "5313bb6e-439b-5849-8177-9a1b93c490dc",
+      "name": "Vision service: crop",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        -200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const RULES = [\n  'You read pages from an engineering knowledge base: plan sheets, construction details, scanned manuals, charts and photos.',\n  'Answer the question only from what the images show. Quote labels, dimensions, notes and table values exactly as printed.',\n  'Reading a value off a chart or curve: (1) read both axis labels, units and the value of each grid line; (2) find the grid line for the given x value;',\n  '(3) find the named curve. In a FAMILY of curves (e.g. 1, 2, 5, 10, 25, 50, 100-year), curves never cross, so identify them by ORDER: where the labels are printed,',\n  '    list every curve from the bottom up with its label (e.g. \"1st = 1-yr, 2nd = 2-yr, 3rd = 5-yr ...\"); then at the target x count curves from the bottom up to reach the',\n  '    same ordinal. State that count in your answer (e.g. \"the 4th curve from the bottom = 10-year\").',\n  '    CROSS-CHECK: count the curves at the target x too. If there are more curves than labels in your list, you missed a label (small labels on the',\n  '    lowest or most crowded curves are easy to miss, e.g. a \"1\" that looks like \"/\"); find it and redo the order before reading.',\n  '(4) count grid cells from the nearest labelled y value to where the curve crosses;',\n  '(5) give your best estimate, then a range of plus/minus ONE minor grid division around it (e.g. best 5.4, grid 0.2 -> \"about 5.4 in/hr (5.2–5.6)\"), naming the curve and axes;',\n  '(6) always end a chart reading with: \"Read from the chart — verify on the figure (or a published table/equation) before using it for design.\"',\n  'When you get a whole sheet plus zoomed tiles of it, use the tiles for small text, dimensions and notes, and the whole sheet for layout and labels.',\n  'On plans and profiles, identify each structure or material by matching its hatch/fill pattern to the sheet legend, and name its type (e.g. cascade, cobble riffle, riprap) — a station or elevation alone is not a structure.',\n  'If the images do not show the answer, say so plainly. Do not guess and do not use outside knowledge as if it were on the page.',\n  'Cite each fact as (file name, page N). Be concise: a few sentences or a short list.'\n].join('\\n');\nconst describe = imgs => imgs.map((m, i) => `${i + 1}) ${m.file_name}, page ${m.page_no}` +\n  (m.kind === 'tile' ? ` — zoomed tile, row ${Math.floor(m.tile_ix / 4) + 1} of 3, column ${m.tile_ix % 4 + 1} of 4 (tiles overlap slightly)` : '')).join('; ');\n// Pass 2: the same images + the enlarged region. The close-up gives the precise reading; the full image gives labels and axes.\nconst imgs = $('Vision service: page images').first().json.images || [];\nconst q = $('Parse page refs').first().json.question;\nconst d = $('Zoom requested?').first().json;\nconst crop = $input.first().json;\nif (!crop.png_b64) return [{ json: { body: null } }];   // crop failed: \"Crop ok?\" skips the model, \"Return the reading\" reports it\nconst content = [{ type: 'text', text: `Question: ${q}\\n\\nImages: ${describe(imgs)}; ${imgs.length + 1}) ENLARGED VIEW of image ${d.image}, `\n  + `region x ${crop.box?.[0]}–${crop.box?.[2]}, y ${crop.box?.[1]}–${crop.box?.[3]} (fractions of that image), zoom x${crop.zoom}.\\n`\n  + `Your first look said: \"${d.draft}\". In the enlarged view, at the target x count the curves from the bottom up to the ordinal of the named `\n  + `curve (from image ${d.image} and your first look), then read its value by counting grid cells from a labelled value. Give the final answer in plain text, `\n  + `stating which curve (ordinal from the bottom) you read.` }];\nfor (const m of imgs) content.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${m.png_b64}`, detail: 'high' } });\nif (crop.png_b64) content.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${crop.png_b64}`, detail: 'high' } });\nreturn [{ json: { body: { model: 'gpt-5.4-mini', reasoning_effort: 'medium', max_completion_tokens: 6000,\n  messages: [{ role: 'system', content: RULES }, { role: 'user', content }] } } }];"
+      },
+      "id": "edb8dc5e-6881-5d38-80f4-8d34e3fbe929",
+      "name": "Build zoomed request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1",
+              "leftValue": "={{ !!$json.body }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6ba08b5a-4902-51ad-8075-9a677f209e77",
+      "name": "Crop ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://__AZURE_AI_HOST__/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "azureOpenAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 75000
+        }
+      },
+      "id": "295eb0cf-a063-5336-8c86-c71aece0992b",
+      "name": "gpt-5.4-mini reads the close-up",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        -300
+      ],
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass 2 result (design part 2; rulings R70, R73). Every failed zoom pass returns the first-look draft marked as\n// approximate and logs an incident: truncated_pass2 = the reply was cut off (finish_reason \"length\") or had no text;\n// zoom_failed = no reply at all: the crop failed (then \"Crop ok?\" skipped the model) or the close-up call failed.\nconst m = $input.first().json;\nconst fallback = $('Zoom requested?').first().json.draft;\nconst choice = m.choices?.[0];\nconst why = (r) => {\n  const c = r.choices?.[0] ?? {}, u = r.usage ?? {}, rt = u.completion_tokens_details?.reasoning_tokens;\n  const fr = String(c.finish_reason ?? 'none').replace(/content_filter/i, 'filter').slice(0, 20);   // the scrub cuts at \"content\"\n  return `finish_reason ${fr}, ${c.message?.content ? 'partial' : 'empty'} reply`\n    + (u.completion_tokens != null ? `, ${Number(u.completion_tokens)} completion tokens` : '')\n    + (rt != null ? ` (${Number(rt)} reasoning)` : '');\n};\nconst errText = (e) => String((e !== null && typeof e === 'object' ? e.message : e) || 'unknown error').replace(/\\s+/g, ' ').trim().slice(0, 120);\nconst failed = (r) => r.error ? `Azure call failed: ${errText(r.error)}` : 'no reply from the model';\nconst failedRead = (incident, node, reason, alt) => [{ json: {\n  response: fallback ? '(zoom failed; first-look reading, approximate) ' + fallback : alt,\n  incident, incident_node: node, incident_message: 'zoom pass: ' + reason } }];\nconst COULD_NOT = 'The vision model could not read the pages right now. Tell the user; do not guess.';\nif ($('Build zoomed request').first().json.body === null) {\n  const c = $('Vision service: crop').first().json;\n  return failedRead('zoom_failed', 'Vision service: crop', 'crop failed: ' + (c.error ? errText(c.error) : 'no image returned'), COULD_NOT);\n}\nif (!choice) return failedRead('zoom_failed', 'gpt-5.4-mini reads the close-up', failed(m), COULD_NOT);\nif (choice.finish_reason === 'length' || !choice.message?.content)\n  return failedRead('truncated_pass2', 'gpt-5.4-mini reads the close-up', why(m), \"The vision model's reading was cut off; ask a narrower question. Tell the user; do not guess.\");\nreturn [{ json: { response: choice.message.content } }];"
+      },
+      "id": "1421c33a-da2b-515c-a27b-8c556c90ecaa",
+      "name": "Return the reading",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i1",
+              "leftValue": "={{ !!$json.incident }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4f2df6e2-79f6-59d5-b39e-6629f395be3b",
+      "name": "Incident?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2860,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://n8n-main:5678/webhook/rag-incident",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ source: 'look_at_pages', kind: $json.incident, message: $json.incident_message, workflow: $workflow.name, workflow_id: $workflow.id, node: $json.incident_node, execution_id: $execution.id }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "575462e5-ce46-5771-91bb-ba77b4172a39",
+      "name": "Log incident",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        -80
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "RAG webhook token"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// What the agent gets: the response of the step that decided it (\"Return the reading\" after a zoom, else \"Zoom requested?\"),\n// read by name, so \"Log incident\" (the reporter's reply, or its error item) never changes it.\nconst d = ($('Return the reading').isExecuted ? $('Return the reading') : $('Zoom requested?')).first().json;\nreturn [{ json: { response: d.response } }];"
+      },
+      "id": "13d35c16-07b3-5d0f-b62c-9d1227af1f91",
+      "name": "Return to the agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3300,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "response",
+              "value": "={{ $json.response }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2906ac91-4e19-54e9-ae5a-f1a27086d635",
+      "name": "Return the problem",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1100,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Look at pages (tool: look_at_pages)\nFetches the page images from the local vision service (a sheet comes as overview + all 12 tiles) and shows them to **gpt-5.4-mini** (Azure, US Data Zone) with the question.\n**Two passes:** if a precise reading needs a closer look (a value off a chart, tiny text), the model asks for a region; the service crops and enlarges it and the model reads again. Only the short answer goes back to the agent.\nA **failed read** is not a reading: a first look that is cut off by the 6000-token budget, empty or failed tells the agent so; a failed zoom pass (cut off, empty, crop or call failed) returns the first-look draft marked approximate. Each logs an incident with the error reporter (*Log incident*).",
+        "height": 400,
+        "width": 760,
+        "color": 7
+      },
+      "id": "0c205bc0-ea2c-5b21-bb3d-1058d37ac819",
+      "name": "Look at pages",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -500
+      ]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Parse page refs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse page refs": {
+      "main": [
+        [
+          {
+            "node": "Vision service: page images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vision service: page images": {
+      "main": [
+        [
+          {
+            "node": "Build vision request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build vision request": {
+      "main": [
+        [
+          {
+            "node": "Have images?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Have images?": {
+      "main": [
+        [
+          {
+            "node": "gpt-5.4-mini looks at the pages",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return the problem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gpt-5.4-mini looks at the pages": {
+      "main": [
+        [
+          {
+            "node": "Zoom requested?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoom requested?": {
+      "main": [
+        [
+          {
+            "node": "Zoom?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoom?": {
+      "main": [
+        [
+          {
+            "node": "Vision service: crop",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Incident?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vision service: crop": {
+      "main": [
+        [
+          {
+            "node": "Build zoomed request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build zoomed request": {
+      "main": [
+        [
+          {
+            "node": "Crop ok?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crop ok?": {
+      "main": [
+        [
+          {
+            "node": "gpt-5.4-mini reads the close-up",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return the reading",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gpt-5.4-mini reads the close-up": {
+      "main": [
+        [
+          {
+            "node": "Return the reading",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return the reading": {
+      "main": [
+        [
+          {
+            "node": "Incident?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Incident?": {
+      "main": [
+        [
+          {
+            "node": "Log incident",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return to the agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log incident": {
+      "main": [
+        [
+          {
+            "node": "Return to the agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "errorWorkflow": "ragErrorReport01"
+  },
+  "active": false
+}

@@ -113,7 +113,47 @@ services:
       - gotenberg
       - --api-timeout=300s   # default 30s is too short for converting large decks
 
+  # Scheduled evals (optional, profile "evals"): every Sunday (04:00 / 04:30 / 05:15 PT) a runner asks the live agent
+  # three question sets (demo, messy messages, visual), grades the answers with regex/numeric checks or the
+  # RAG – Judge webhook, and posts each run to /webhook/rag-incident: an eval_run row, and one Telegram message when a
+  # set drops below its floor. Stdlib Python, no packages.
+  # The runner and the question sets are NOT in this repo: they're written from the documents of the library they test.
+  # Put your own in ../../evals (scheduled.py plus <set>/ folders with a results/ subfolder each), then:
+  #   docker compose --profile evals up -d evals
+  #   docker compose run --rm evals python /evals/scheduled.py demo|messy|visual|all     # run a set now
+  evals:
+    profiles: ["evals"]
+    image: python:3.12.15-slim
+    restart: unless-stopped
+    init: true                       # PID 1 forwards SIGTERM, so stop/restart is immediate
+    command: ["python", "/evals/scheduled.py", "--loop"]
+    environment:
+      N8N_URL: http://n8n-main:5678
+      RAG_WEBHOOK_TOKEN: ${RAG_WEBHOOK_TOKEN}
+      TZ: America/Los_Angeles
+      # pass floor of the visual set: the measured baseline minus one, so a normal week doesn't page
+      EVAL_FLOOR_VISUAL: "10"
+      PYTHONUNBUFFERED: "1"          # progress lines reach `docker compose logs evals` at once
+      PYTHONDONTWRITEBYTECODE: "1"   # /evals is mounted read-only
+    volumes:
+      - ../../evals:/evals:ro
+      - ../../evals/demo/results:/evals/demo/results
+      - ../../evals/messy/results:/evals/messy/results
+      - ../../evals/visual/results:/evals/visual/results
+      - evals-state:/state           # last runs per set, and the alive file
+    labels:
+      autoheal: "true"               # for an autoheal container, if you run one
+    healthcheck:
+      # --loop touches /state/alive every minute while it makes progress (a long eval run included); a one-off
+      # `run --rm` container touches only its own /tmp/alive, so it never makes the service look healthy
+      test: ['CMD-SHELL', 'find /state/alive /tmp/alive -mmin -5 2>/dev/null | grep -q .']
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
 volumes:
   postgres-data:
   redis-data:
   n8n-data:
+  evals-state:

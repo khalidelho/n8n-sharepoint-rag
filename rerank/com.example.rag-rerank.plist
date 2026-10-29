@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Local reranker for "RAG – Search (reranked)": bge-reranker-v2-m3 (GGUF, Q8_0) served by llama.cpp's llama-server.
+     Localhost only; n8n reaches it at http://host.docker.internal:18501/v1/rerank. No Azure tokens per search.
+     Needs:  brew install llama.cpp   and the model file at __REPO__/rerank/bge-reranker-v2-m3-Q8_0.gguf (~600 MB; a Q8_0
+     GGUF conversion of BAAI/bge-reranker-v2-m3 from Hugging Face). Install (from the repo root):
+       sed -e "s#__REPO__#$PWD#g" -e "s#__HOME__#$HOME#g" rerank/com.example.rag-rerank.plist \
+         > ~/Library/LaunchAgents/com.example.rag-rerank.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.rag-rerank.plist
+     Check:  curl -s localhost:18501/v1/rerank -d '{"query":"pipe","documents":["pipe sizing","lunch menu"]}'
+     -c/-b/-ub: 16k context shared by 4 parallel slots, and a batch big enough for one 1,500-character passage. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.rag-rerank</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/llama-server</string>
+		<string>-m</string><string>__REPO__/rerank/bge-reranker-v2-m3-Q8_0.gguf</string>
+		<string>--reranking</string>
+		<string>--host</string><string>127.0.0.1</string>
+		<string>--port</string><string>18501</string>
+		<string>-c</string><string>16384</string>
+		<string>-b</string><string>4096</string>
+		<string>-ub</string><string>4096</string>
+		<string>--parallel</string><string>4</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/rag-rerank.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/rag-rerank.log</string>
+</dict>
+</plist>

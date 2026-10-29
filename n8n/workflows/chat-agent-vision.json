@@ -1,0 +1,898 @@
+{
+  "id": "ragChatVision001",
+  "name": "RAG – Chat agent (vision)",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.5,
+      "position": [
+        40,
+        215
+      ],
+      "id": "c440f2a5-d60a-58ff-a9f4-ce69eae454f2",
+      "name": "When chat message received",
+      "webhookId": "766cbaa0-fc39-5250-a927-c1a999492f56"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "=You are the assistant for a company knowledge base: manuals, SOPs,\ntraining decks, checklists, reports and spreadsheets. You answer ONLY from these documents.\n\nHow to work — follow these rules every time:\n1. Start with search_documents for anything in the documents (manuals, SOPs, decks, PDFs) unless the answer is already\n   fully contained in this conversation's earlier tool results.\n   Exception: questions about what a drawing, plan sheet, detail, figure, chart, scanned page or photo shows start with\n   search_pages instead (see the visual rules below). Spreadsheet data (every row of every Excel tab) is NOT in\n   search_documents — it is only reachable with query_spreadsheets.\n2. If the passages returned are not enough to answer, look at their metadata, choose the most\n   relevant file, and call get_full_document with its file_id. Do not answer from partial passages\n   when the full document would settle it.\n3. If the question mentions a spreadsheet, workbook, sheet, tab, table or calculation sheet, or needs ANY calculation,\n   total, average, count, filter or comparison of values, you MUST use query_spreadsheets — even if search_documents\n   found nothing or only a blank template. Never do arithmetic yourself.\n   A plan/drawing sheet (e.g. \"sheet C-08\") or a table printed on a drawing is NOT a spreadsheet: use the visual tools for those.\n   a) First list what exists: select file_name, row_data->>'_sheet' as tab, count(*) from document_rows group by 1, 2 order by 1, 2;\n   b) Engineering sheets often have title rows and multi-row headers, so many columns are named __EMPTY, __EMPTY_1, …\n      and the real headings (\"Amount (USD)\", \"Total Hours\") are VALUES in the first rows of the tab. To find the\n      column for a heading, search the rows for it, e.g.:\n      select id, row_data from document_rows where file_name = 'X.xlsx' and row_data->>'_sheet' = 'Tab'\n        and row_data::text ilike '%Amount%' order by id limit 5;\n      then see which key holds that heading. Or read the tab's first 10 rows (order by id).\n   c) Compute with SQL over REAL data rows only, guarding numeric casts: where pg_input_is_valid(row_data->>'KEY', 'numeric')\n      Skip title/header rows, blank template rows and total/summary rows. Real rows have an ID or label (e.g. an item\n      ID like \"A-1\" or \"B-12\"); template rows below the data have none and are full of zeros/constants. So ALWAYS\n      find the ID column (search for its heading, e.g. '%Item ID%') and add: and coalesce(row_data->>'ID_KEY','') <> ''\n      Cross-check before answering: if the number of rows you used is larger than the number of rows with an ID,\n      you included template rows — redo the query.\n   d) Say which workbook, tab and column you used and how many rows (e.g. \"across 40 items\").\n   e) Round results sensibly (2–3 decimals) and give units from the heading. Never show internal keys like\n      __EMPTY_33 to the user — use the real heading.\n   f) If the question asks for an average/total but doesn't name a column, don't just ask back: use the most relevant\n      workbook and tab, give a small table of the averages (or totals) of its main numeric columns, then offer to\n      drill into one.\n4. Passages may contain screenshots and diagrams written as ![description](url).\n   When you explain steps, a procedure, a screen, a form or a diagram, and a passage has an image of it,\n   you MUST include that image — copy the markdown exactly, URL unchanged — directly under the step it\n   illustrates. Never collect images at the end, and never invent image URLs.\n5. Cite each source file once per section (or once at the end, if the whole answer comes from one file), with the\n   pages when search_documents gave a page_range, e.g. (Source: Safety Manual.pdf, p. 3-5).\n6. If the tools do not return enough information, say plainly that the answer is not in the\n   documents. Do not guess, do not fill gaps, and do not blend in content from unrelated files.\n   Never say spreadsheet data doesn't exist until you have listed the workbooks with query_spreadsheets.\n7. Keep it efficient: if after about 8 tool calls you still can't finish, stop and answer with what you found\n   and what is missing — never keep searching indefinitely.\n8. Web — the documents are the organization's source of truth. Two web tools:\n   • search_web — VERIFIED public sources only (allow-listed agencies, regulations, federal guidance).\n   • search_open_web — the wider web (industry, manufacturers, research, practice articles) — NOT verified.\n   After searching the documents, you MUST also call search_web when ANY of these is true:\n     (1) the question asks about current / latest / new / emerging / recent regulations, requirements, changes,\n         technologies, products or best practices;\n     (2) the question names a product, method, standard or requirement that your document search did not find\n         (report what the documents say, then search the web for the missing part — do not just offer to);\n     (3) the user asks for other, wider or outside sources; (4) review mode.\n   Then you MUST also call search_open_web when the verified sources didn't cover it, when the user asks for wider /\n   other sources, or when the question is about technologies, products or approaches (industry and manufacturer\n   information lives outside the verified list). Do not use the web for questions the documents fully answer,\n   such as how-to steps, document contents or spreadsheet values.\n   Write each web query as a short, generic search (e.g. \"current stormwater management permit requirements\"); never put\n   document text, file names, project names or people in a query — the query leaves the organization.\n   When you used a web tool, write the documents part as:\n   ### From your documents\n   — only facts from search_documents / get_full_document / query_spreadsheets, cited by file name\n     (write \"Nothing relevant found in the documents.\" if so)\n   Do NOT write the web sections yourself: the system appends \"From verified public sources\" and \"From the wider\n   web — not on the verified list\" automatically, with every finding and link exactly as the web tools returned them.\n   You may add a short summary before them only if every point is tagged (doc), (verified) or (wider web). If a web\n   finding contradicts a document, say so in that summary and name both — documents take precedence.\n   When you used no web tool, answer normally without these headings.\n9. Review mode — when asked to review, update, check, modernize or compare a template, standard, SOP, checklist,\n   scope of work or guideline:\n   a) Read the template in full: find it with search_documents, then get_full_document (or use text the user pasted).\n      If you can't identify it, ask which document to review.\n   b) Search the documents 2–3 times for related internal standards, guidance and checklists (not the template itself).\n   c) Call search_web 1–2 times for current regulations and best practices on the same subject; add one search_open_web\n      call if newer technologies or approaches would strengthen the recommendations.\n   d) Answer with these sections:\n      **Summary** — 2–3 sentences: what the template is and how complete it looks.\n      **Already covered** — short bullets.\n      **Recommended additions / updates** — a table: | # | Recommendation | Why | Source | Priority |\n        Every Source cell MUST start with (doc) + the file name, (web) + a [title](url) link for verified sources, or\n        (web – unverified) + a [title](url) link for wider-web sources;\n        Priority = High / Medium / Low.\n      **Possibly outdated** — items that conflict with newer documents or current regulations (or \"None found\").\n      **Suggested wording** — draft text for the top 3 recommendations.\n      Then the documents section from rule 8 (the web sections are appended automatically).\n   Recommend only what a source supports; never invent requirements.\n\n## Drawings, plan sheets, scanned pages, charts and photos (visual tools)\n- Use **search_pages** when the question is about what a sheet, detail, figure, chart, graph, table on a drawing, scanned page or photo shows, or when it names a sheet, figure, chart or table number. It finds pages by how they look and by their sheet/figure numbers.\n- Then you MUST call **look_at_pages** before answering, with the best 1–3 refs from search_pages (put the page that IS the named sheet/figure first) and the user's question. Text passages about a figure or drawing are not enough, even when they look complete. Base the answer on what look_at_pages reports, and cite the file and page (and sheet number when known).\n- Text passages (search_documents) can be garbled for drawings and scans. If they don't clearly answer a drawing or chart question, look at the page instead of searching again. Do at most two searches of any kind before looking at pages.\n- **Values read from a chart or curve are approximate.** Say so, give the reading with its range, name the figure/chart, and ALWAYS keep the caveat \"verify on the figure (or a published table/equation) before using it for design\".\n- These visual rules do not change rule 4: in how-to and procedure answers, screenshots from passages still go directly under the step they illustrate, never collected at the end.\n- **Page numbers:** search_documents results carry `page_range` (e.g. \"14\" or \"14-16\") and `page_ref` (the passage's best-matching page). Always cite the range with the file (see rule 5), for every file type that has one: PDF, Word (.docx) and PowerPoint (.pptx, where pages are slides) alike. When a text passage is about a drawing, figure, table or form and its text is unclear or garbled, call look_at_pages with its page_ref (never the page_range) instead of searching again.\n- **If the question names a specific sheet, figure, chart or table, answer from that item.** If your answer comes from a different document or page, say so explicitly. If you can't find the named item, say so; never substitute another document's content as if it were the item asked about.\n\n## Reading the question; documents the user names\n- **People type fast.** Typos, clipped words, swapped acronym letters and shorthand are normal (\"complant\", \"geotech reqs\", \"NPEDS\"). When the system adds HOW TO READ THIS MESSAGE or SPELLING notes, follow them. If you notice yourself that a word fits nothing in your results while a common library term clearly does (e.g. \"Fall stabilisation … creeks that feed the river\" → outfall), read it that way, search for it, and say so in one short line at the top. Leave words that make sense as typed (\"fall protection\", \"fall seeding\"), and never reinterpret identifiers (sheet, drawing, project or file numbers).\n- **Named documents:** if the question names one specific document by its title or number, or as \"the X SOP / standard / template / checklist / scope\" (e.g. \"the NPDES stream restoration standard design scope\"), check that it is among the file names in your search results or in the system's list of matching file names. If it isn't, say so in the first lines (\"I couldn't find the … in the library; the closest files are …\"). Then describe what those closest files contain, by file name; never describe the missing document itself (\"the … scope appears to include …\"), and present anything you draft as new wording based on those files, not as an update of the named document. This does not apply to general requests (\"our standard approach to …\", \"write a scope of work for …\").\n\nAnswer in clear, concise Markdown.\n{{ $json.routingNote || '' }}",
+          "maxIterations": 14,
+          "returnIntermediateSteps": true
+        },
+        "promptType": "define",
+        "text": "={{ $json.chatInput }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        880,
+        237
+      ],
+      "id": "ad7b4253-cf43-57b4-aaf0-1b3f740bdae7",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-5.4-mini",
+          "mode": "id"
+        },
+        "options": {
+          "timeout": 120000,
+          "maxRetries": 2,
+          "extraBody": "{\"reasoning_effort\": \"low\"}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        427
+      ],
+      "id": "cf307ebf-047a-5248-9041-2606eff2b873",
+      "name": "Azure AI Foundry Chat Model",
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "contextWindowLength": 10,
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.sessionId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.4,
+      "position": [
+        1120,
+        427
+      ],
+      "id": "15a73cff-a390-54c2-9068-0500a15b43f7",
+      "name": "Postgres Chat Memory",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Semantic search over the knowledge base. Input: a natural-language search query.\nReturns the most relevant passages. Each has metadata.file_name (cite it) and\nmetadata.file_id (use it with get_full_document).\n",
+        "tableName": {
+          "__rl": true,
+          "value": "documents",
+          "mode": "list",
+          "cachedResultName": "documents"
+        },
+        "options": {
+          "queryName": "match_documents"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        2320,
+        158
+      ],
+      "id": "1ee19161-7a9b-5c47-8674-3f445a736359",
+      "name": "search_documents_A",
+      "credentials": {
+        "supabaseApi": {
+          "name": "Supabase API – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        2320,
+        348
+      ],
+      "id": "bfd40559-4eb3-5a87-a08d-4027ab1994f5",
+      "name": "Embeddings Azure OpenAI",
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Returns the complete text of ONE document, in its original order, by file_id.\nUse when search_documents found the right document but its passages are not enough.\nVery long documents are cut at 80,000 characters.",
+        "operation": "executeQuery",
+        "query": "select metadata->>'file_name' as file_name,\n       left(string_agg(content, E'\\n\\n' order by (metadata->>'chunk_index')::int), 80000) as full_text\nfrom documents\nwhere metadata->>'file_id' = $1\ngroup by metadata->>'file_name';",
+        "options": {
+          "queryReplacement": "={{ [ $fromAI('file_id', 'The file_id of the document, from metadata.file_id in a search_documents result', 'string') ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.7,
+      "position": [
+        1720,
+        237
+      ],
+      "id": "23c617bb-2364-53c1-847b-98de715b1a2f",
+      "name": "get_full_document",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – read-only (agent)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Runs ONE read-only PostgreSQL SELECT on the table document_rows (spreadsheet data):\n  id bigint (sheet row order), file_id text, file_name text, row_data jsonb   -- one row per spreadsheet row; the keys of row_data are the column headers,\n  plus \"_sheet\" = the workbook tab the row came from (workbooks can have many tabs)\nTips: list tabs:     select file_name, row_data->>'_sheet' as tab, count(*) from document_rows group by 1, 2;\n      see columns:   select distinct jsonb_object_keys(row_data) from document_rows where file_name ilike '%name%' and row_data->>'_sheet' = 'Tab';\n      read a value:  row_data->>'Column Name'      numbers: (row_data->>'Column Name')::numeric\nHeaders: title rows make many keys __EMPTY, __EMPTY_1…; read the tab's first 10 rows (order by id) to map keys to headings.\nAlso holds rainfall distribution tables (from a zip of .tbl files): one tab per table file, keys \"Distribution\", \"Time (hr)\", \"Cumulative fraction\".\nAlways add LIMIT 200 when returning rows.",
+        "operation": "executeQuery",
+        "query": "{{$fromAI('sql', 'One PostgreSQL SELECT statement over document_rows', 'string')}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.7,
+      "position": [
+        1960,
+        237
+      ],
+      "id": "76297760-3be8-540b-8c5f-7a5855d7b70f",
+      "name": "query_spreadsheets",
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – read-only (agent)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "description": "Semantic search over the knowledge base. Input: a natural-language search query.\nReturns the most relevant passages. Each has metadata.file_name (cite it) and\nmetadata.file_id (use it with get_full_document).\n",
+        "workflowId": {
+          "__rl": true,
+          "value": "ragSearchRerank1",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ragSearchRerank1",
+          "cachedResultName": "RAG – Search (reranked)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', 'A natural-language search query', 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "f179aea8-b9ee-56b0-8342-549252c7a5f9",
+      "name": "search_documents",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        237
+      ]
+    },
+    {
+      "id": "cefc337a-c1c5-5826-b2c1-63fb052ddacc",
+      "name": "Open WebUI webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        40,
+        405
+      ],
+      "webhookId": "1dc7b104-a4c5-50ea-9691-8faa204aee61",
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "RAG webhook token"
+        }
+      },
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rag-chat",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "responseData": "firstEntryJson",
+        "options": {}
+      }
+    },
+    {
+      "id": "18283fc1-9118-5000-92b2-61fa48bf85c2",
+      "name": "Normalize webhook input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        280,
+        405
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "040a8948-d9f1-4134-b7c0-3bf0342cb0f9",
+              "name": "chatInput",
+              "value": "={{ $json.body.chatInput }}",
+              "type": "string"
+            },
+            {
+              "id": "3f30eada-b92b-4d38-a9f0-22aeefc2f94a",
+              "name": "sessionId",
+              "value": "={{ $json.body.sessionId }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      }
+    },
+    {
+      "id": "b11d8b70-55e7-5d00-a39d-bdf7ba93f1b2",
+      "name": "Log usage (no text)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        520,
+        405
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      },
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- One row per question: when + pseudonymous person/chat hashes. Never the question text.\ninsert into usage_log (user_hash, chat_hash) values ($1, $2)\nreturning $3::text as \"chatInput\", $4::text as \"sessionId\";",
+        "options": {
+          "queryReplacement": "={{ [ $json.sessionId.split(':')[0].hash('sha256').slice(0, 16), $json.sessionId.hash('sha256').slice(0, 16), $json.chatInput, $json.sessionId ] }}"
+        }
+      }
+    },
+    {
+      "id": "3f52e34c-d934-5810-901e-1a7c30053684",
+      "name": "① How questions arrive",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        0
+      ],
+      "parameters": {
+        "content": "## ① How questions arrive\nTwo doors into the same agent:\n- the **n8n test chat** (for building and testing)\n- the **Open WebUI webhook** (`POST /webhook/rag-chat`, requires the secret token)\n\nWebhook input is normalised to `{chatInput, sessionId}` (session = person:chat). Then one usage row is logged: the time plus hashed person and chat IDs — **never the question text**.\n\n**Question router** (bottom row): one small gpt-5.4-mini call classifies each question — web needed (none / verified / verified + wider) and review mode — and appends a per-question instruction to the agent's system message, so web searches happen reliably when they should, and plain how-to or spreadsheet questions are told to stay on the documents.",
+        "height": 780,
+        "width": 760,
+        "color": 5
+      }
+    },
+    {
+      "id": "8d174cf8-4182-5ea2-acf3-0cad6e91745f",
+      "name": "② The agent",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        820,
+        0
+      ],
+      "parameters": {
+        "content": "## ② The agent — GPT-5.4 mini\nFollows the six rules in its system message: always search first · read the full document when passages aren't enough · SQL for any math · screenshots inline · cite the file · say so when the answer isn't in the documents.\n\n**Memory:** the last 10 messages of this chat, stored in Supabase `n8n_chat_histories` and deleted after 90 days.\n\n**Append web sections** (right of the agent): the web findings are added by code, exactly as the web tools sorted them — the model writes only the documents part, so verified vs wider-web labels can't be mixed up.",
+        "height": 637,
+        "width": 520,
+        "color": 4
+      }
+    },
+    {
+      "id": "2d489b46-9813-54f7-8393-c4421e763269",
+      "name": "③ The tools",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        0
+      ],
+      "parameters": {
+        "content": "## ③ The agent's tools — it decides which to use\n- **search_documents** → sub-workflow *RAG – Search (reranked)*: 25 passages by meaning, GPT keeps the best 4\n- **get_full_document** → every passage of one file, in order\n- **query_spreadsheets** → SQL the agent writes itself on `document_rows`\n\nBoth database tools use a **read-only** login: they can't change anything, and queries stop after 15 seconds.\n\n**search_web** (bottom) — verified, allow-listed public sources for *current* regulations and best practices. **search_open_web** — the wider web, only when the verified list doesn't cover it. Answers keep three sections: **From your documents** / **From verified public sources** / **From the wider web — not on the verified list**. Review mode (rule 9) combines all tools into a gap report for a template or standard.",
+        "height": 620,
+        "width": 760,
+        "color": 6
+      }
+    },
+    {
+      "id": "500aa0dc-28f0-503c-9415-dae194e2a5b6",
+      "name": "④ Kept for comparison",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2260,
+        0
+      ],
+      "parameters": {
+        "content": "## ④ Not in use — kept for comparison\nThe original plain vector search (top 4, no reranking). Disconnected after the A-vs-B test showed reranking finds better passages. Safe to delete.",
+        "height": 558,
+        "width": 520,
+        "color": 7
+      }
+    },
+    {
+      "parameters": {
+        "description": "Searches VERIFIED, AUTHORITATIVE PUBLIC WEB SOURCES only (by default federal: EPA, eCFR, Federal Register, FHWA, NRCS,\nUSACE, FEMA, NOAA/USGS — plus any state or local domains you add) for CURRENT regulations, standards and best\npractices. Use it only when the question asks what is current / latest / changed, about regulations or best practices,\nwhen the documents don't answer, or in review mode. Input: one focused search query.\nReturns verified_findings (each bullet with its link) and the retrieved date.",
+        "workflowId": {
+          "__rl": true,
+          "value": "ragWebSearch0001",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ragWebSearch0001",
+          "cachedResultName": "RAG – Web search (allow-listed)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', 'A focused web search query about current regulations, standards or best practices', 'string') }}",
+            "scope": "verified"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "scope",
+              "displayName": "scope",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "c7f9fb1d-e42b-5ba7-8354-6db638dc14d1",
+      "name": "search_web",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1720,
+        430
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Searches the WIDER WEB (not limited to the verified list): industry and manufacturer guidance, research,\nprofessional associations, practice articles. Results are NOT verified. Use only after search_web when the verified sources\ndon't cover it, when the user asks for other / wider sources, or for newer technologies, products and approaches.\nInput: one focused, generic search query. Returns verified_findings and wider_findings (already sorted, each bullet with its link) and the retrieved date.",
+        "workflowId": {
+          "__rl": true,
+          "value": "ragWebSearch0001",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ragWebSearch0001",
+          "cachedResultName": "RAG – Web search (allow-listed)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', 'A focused, generic web search query', 'string') }}",
+            "scope": "open"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "scope",
+              "displayName": "scope",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "7aa7eabc-7f69-5b1f-a740-db0cb52e7920",
+      "name": "search_open_web",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        430
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Question router, step 1: one small classification call BEFORE the agent decides anything.\n// Classifies: does this question need the web (none / verified / verified + wider web)? Is it a review request? And how\n// to read it: typos and clipped words (\"Fall\" for \"Outfall\"), judged against library terms that look like words in\n// the message (node \"Library vocabulary\"; if that lookup failed, the router just works without candidates).\nconst lk = $json.lookup ?? null;\n// fallback by position, not item pairing: a failed query's error item has no pairing back (tested 2026-10-22)\nconst pick = name => { const all = $(name).all(); return (all[$itemIndex] ?? all[0])?.json ?? {}; };\nconst base = $json.chatInput !== undefined ? $json\n  : ($('Log usage (no text)').isExecuted ? pick('Log usage (no text)') : pick('When chat message received'));\nconst { lookup, error, ...keep } = base;\nconst vocab = (lk?.vocab ?? []).slice(0, 12).map(v => `${v.said} -> ${v.library_term} (${v.files} files)`);\n// the message goes to the router exactly as before (a \"Message:\" prefix shifted web routing on demo D4); candidates,\n// when there are any, follow as a separate system note\nconst candNote = vocab.length\n  ? [{ role: 'system', content: 'Library terms that look like words in the message (word as typed -> library term, files containing it), for the reading field only: ' + vocab.join('; ') }] : [];\nconst ROUTER_PROMPT = \"You route questions for an engineering knowledge assistant whose primary source is the organization's internal documents (manuals, SOPs, design guides, templates, spreadsheets, plan sets, training). Return JSON {web, review, reading}.\\nweb:\\n- \\\"none\\\": how-to steps; what a document, sheet, figure or template says; spreadsheet values or calculations; internal procedures; people or projects — anything the internal documents should fully answer.\\n- \\\"verified\\\": asks about CURRENT / latest / recent / updated regulations, requirements, permits, criteria or official guidance, or names an external regulation or agency standard.\\n- \\\"verified_and_open\\\": asks about technologies, products, materials, vendors, newer or emerging approaches, industry practice, or explicitly asks for web / outside / wider / other sources.\\nreview: true when the user asks to review, update, check, modernize or compare a template, standard, SOP, checklist, scope of work or guideline (then web must be at least \\\"verified\\\").\\nreading: words or short phrases the user most likely mistyped, clipped or misspelled, with what they meant. People type fast: typos, dropped letters, clipped words, British spellings, swapped acronym letters, shorthand (reqs = requirements, geotech = geotechnical). The system lists library terms that look like words in the message (candidates); judge them with the rest of the sentence. Example: \\\"Fall stabilisation design scope on creeks that feed the river\\\" -> \\\"Fall\\\" meant \\\"outfall\\\" (outfalls drain to streams; \\\"outfall\\\" is common in the library). Leave a word alone when it makes sense as typed: \\\"fall protection\\\", \\\"fall seeding\\\", \\\"in the fall\\\", \\\"rainfall\\\". Never change identifiers (sheet, drawing, project or file numbers such as C-08, PR1234). Do not list a correctly typed acronym or abbreviation just to expand it (ROE, SOP, BMP, MS4): list it only when its letters are wrong (NPEDS -> NPDES). change: \\\"meaning\\\" when the reading changes what is asked (Fall -> outfall); \\\"spelling\\\" for typos and spelling variants that don't (complant -> complaint, stabilisation -> stabilization). Empty list when the message reads fine.\";\nreturn { json: { ...keep, libraryFiles: lk?.files ?? [], routerBody: {\n  model: 'gpt-5.4-mini', reasoning_effort: 'low', max_completion_tokens: 1000,\n  response_format: { type: 'json_schema', json_schema: { name: 'route', strict: true, schema: {\n    type: 'object', additionalProperties: false, required: ['web', 'review', 'reading'],\n    properties: { web: { type: 'string', enum: ['none', 'verified', 'verified_and_open'] }, review: { type: 'boolean' },\n      reading: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['said', 'meant', 'change'],\n        properties: { said: { type: 'string' }, meant: { type: 'string' }, change: { type: 'string', enum: ['meaning', 'spelling'] } } } } } } } },\n  messages: [ { role: 'system', content: ROUTER_PROMPT }, { role: 'user', content: String(keep.chatInput ?? '') }, ...candNote ],\n} } };"
+      },
+      "id": "6cb13b3c-8bac-59c7-8998-fbe06da8067b",
+      "name": "Build routing request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://__AZURE_AI_HOST__/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "azureOpenAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.routerBody) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "ff6a56a2-42e9-51ec-a37e-5e6bfc68ec3c",
+      "name": "Route question (classifier)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        640
+      ],
+      "credentials": {
+        "azureOpenAiApi": {
+          "name": "Azure AI – RAG"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Question router, step 3: turn the classification into an instruction appended to the agent's system message\n// for THIS question only (it is not stored in chat memory). If routing failed, no note — the agent decides itself.\nconst src = $('Build routing request').item.json;\nlet route = {};                                   // unparsable / failed routing → no note at all\ntry { route = JSON.parse($json.choices?.[0]?.message?.content ?? '{}') ?? {}; } catch (e) {}\nlet note = '';\nif (route.web === 'none' && !route.review) note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): answer from the documents only — do not call search_web or search_open_web.';\nif (route.review) note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): this is a review-mode request — follow rule 9, including its web steps.';\nif (route.web === 'verified' || route.web === 'verified_and_open') {\n  note += '\\n\\nROUTING FOR THIS QUESTION (from the system, not the user): after searching the documents you MUST call search_web' +\n    (route.web === 'verified_and_open' ? ', then search_open_web,' : '') + ' and answer with the labelled sections from rule 8.';\n}\n// How to read the message (router + library vocabulary). Meaning changes are said out loud in the answer; spelling\n// fixes are silent. Identifiers (anything with a digit) are never reinterpreted.\n// Guards (Scrutiny 2026-10-22): the word must really be in the message; short, single-line strings only; and a change\n// that is not plausibly a spelling fix or an abbreviation is always said out loud, whatever the router labelled it.\nconst clean = (x, n) => String(x ?? '').replace(/[\\r\\n*_`\"<>]/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, n);\nconst asked = String(src.chatInput ?? '').toLowerCase();\nconst lev = (a, b) => { const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);\n  for (let j = 1; j <= b.length; j++) d[0][j] = j;\n  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)\n    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));\n  return d[a.length][b.length]; };\nconst subseq = (a, b) => { let i = 0; for (const ch of b) if (ch === a[i]) i++; return i === a.length; };\nconst spellingLike = (a, b) => lev(a, b) <= 2 || b.startsWith(a) || (a[0] === b[0] && subseq(a, b));   // stabilisation, geotech, reqs\nconst readings = (Array.isArray(route.reading) ? route.reading : [])\n  .map(r => ({ said: clean(r?.said, 40), meant: clean(r?.meant, 40), change: r?.change }))\n  .filter(r => r.said && r.meant && r.said.toLowerCase() !== r.meant.toLowerCase() && !/\\d/.test(r.said)\n               && new RegExp('(^|[^a-z0-9])' + r.said.toLowerCase().replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '([^a-z0-9]|$)').test(asked))\n  // an all-caps acronym \"read\" as its long form is an expansion, not a fix (ROE -> right-of-entry, demo 2026-10-22)\n  // (only true expansions: the long form's initials spell the acronym, so \"FALL\" -> outfall typed in capitals survives)\n  .filter(r => !(/^[A-Z]{2,}$/.test(r.said)\n                 && r.meant.split(/[\\s\\-\\/]+/).filter(Boolean).map(x => x[0]).join('').toLowerCase() === r.said.toLowerCase()))\n  .map(r => ({ ...r, change: r.change === 'meaning' || !spellingLike(r.said.toLowerCase(), r.meant.toLowerCase()) ? 'meaning' : 'spelling' }))\n  .slice(0, 4);\nconst meaning = readings.filter(r => r.change === 'meaning');\nconst spelling = readings.filter(r => r.change !== 'meaning');\nif (meaning.length) note += '\\n\\nHOW TO READ THIS MESSAGE (from the system, not the user): ' + meaning.map(r => `\"${r.said}\" most likely means \"${r.meant}\"`).join('; ')\n  + '. Search for and answer the intended meaning, and begin the answer with one short line such as: _I read \"' + meaning[0].said + '\" as **'\n  + meaning[0].meant + '**; tell me if you meant something else._';\nif (spelling.length) note += '\\n\\nSPELLING (from the system): search with the corrected words (' + spelling.map(r => `${r.said} -> ${r.meant}`).join(', ')\n  + '). Do not mention these corrections.';\nconst files = (src.libraryFiles || []).slice(0, 10).map(f => clean(f, 150)).filter(Boolean);\nif (files.length) note += '\\n\\nFILES WHOSE NAMES MATCH WORDS IN THE MESSAGE (from the system; only for checking a document the user names, not a reading list): '\n  + files.join('; ');\nconst { routerBody, libraryFiles, ...rest } = src;\nreturn { json: { ...rest, route, routingNote: note } };"
+      },
+      "id": "4ed22088-1def-5fde-9c75-e601ae288d37",
+      "name": "Add routing note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Append the web sections FROM CODE, not from the model: every finding and link exactly as the web tools returned\n// them, already sorted by trust level. The model only writes the documents part, so a source can never be relabelled,\n// paraphrased or dropped. (The agent returns its tool calls as intermediateSteps.)\nconst out = String($json.output ?? '');\nconst steps = Array.isArray($json.intermediateSteps) ? $json.intermediateSteps : [];\nconst webSteps = steps.filter(s => ['search_web', 'search_open_web'].includes(s.action?.tool));\nif (!webSteps.length) return [{ json: { output: out } }];\n\nconst verified = [], wider = [], failures = []; let retrieved = '', openUsed = false;\nconst add = (list, text) => { for (const b of String(text ?? '').split(/\\n\\s*\\n/).map(x => x.trim()))\n  if (b && !b.startsWith('(') && !list.includes(b)) list.push(b); };\nfor (const s of webSteps) {\n  if (s.action.tool === 'search_open_web') openUsed = true;\n  let obs = s.observation; try { obs = JSON.parse(obs); } catch (e) {}\n  for (const it of (Array.isArray(obs) ? obs : [obs])) {\n    const j = it?.json ?? it ?? {};\n    add(verified, j.verified_findings); add(wider, j.wider_findings);\n    if (String(j.note ?? '').startsWith('Web search failed')) failures.push(j.note);\n    retrieved = j.retrieved || retrieved;\n  }\n}\n// drop any web sections the model wrote anyway (from such a heading to the next non-web heading or the end)\n// (headings as #-#### or **bold**, anywhere including the very start)\nconst WEB_HEAD = /(?:^|\\n)[ \\t]*(?:#{1,4}[ \\t]*|\\*\\*)[ \\t]*From (?:verified public sources|the wider web)[\\s\\S]*?(?=\\n[ \\t]*(?:#{1,4}[ \\t]|\\*\\*)(?![ \\t]*From (?:verified public sources|the wider web))|$)/g;\nconst body = out.replace(WEB_HEAD, '').trim();\nconst parts = [body,\n  '### From verified public sources (verify before relying)\\n' + (verified.length ? verified.join('\\n')\n    : failures.length ? `_${failures[0]}_` : '_No verified public source covered this._')];\nif (openUsed) parts.push('### From the wider web — not on the verified list (use with caution)\\n' +\n  (wider.length ? wider.join('\\n') : '_Nothing credible found beyond the verified list._'));\nparts.push(`_Web sources retrieved ${retrieved || new Date().toISOString().slice(0, 10)}._`);\nreturn [{ json: { output: parts.join('\\n\\n') } }];"
+      },
+      "id": "35c5d103-c7c0-598a-9dec-4c6fe0b285ca",
+      "name": "Append web sections",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        57
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Find pages (plan sheets, details, figures, charts, scanned pages, photos) by how they look and by sheet/figure/chart numbers. Input: a short description of what the page shows or the question itself. Returns pages with refs (file_id:page[:tile]) to pass to look_at_pages.",
+        "workflowId": {
+          "__rl": true,
+          "value": "ragPageSearch001",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ragPageSearch001",
+          "cachedResultName": "RAG – Page search"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', \"What the page shows, or the user's question\", 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "5fe9b2fc-164c-521e-b460-86f84a70a106",
+      "name": "search_pages",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1780,
+        657
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Read pages by looking at them: a vision model examines the page images and answers the question from what is drawn or printed (layout, dimensions, notes, chart curves, tables on drawings). Inputs: the question, and 1-3 refs from search_pages separated by commas.",
+        "workflowId": {
+          "__rl": true,
+          "value": "ragLookPages0001",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ragLookPages0001",
+          "cachedResultName": "RAG – Look at pages"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "question": "={{ $fromAI('question', \"The specific question to answer from the pages\", 'string') }}",
+            "pages": "={{ $fromAI('pages', \"Comma-separated refs from search_pages, e.g. 01ABC:14,01ABC:14:5\", 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "question",
+              "displayName": "question",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "pages",
+              "displayName": "pages",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "174dddfa-b41a-5462-99aa-ef475c20d64f",
+      "name": "look_at_pages",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        657
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Library terms that look like words in the message (Fall -> outfall, complant -> complaint) and files whose names\n-- match it. Read-only login; the function lives in sql/phase10_library_vocabulary.sql. Passes the message along.\nselect $1::text as \"chatInput\", $2::text as \"sessionId\", public.library_lookup(left($1::text, 2000)) as lookup;   -- cap: ~2.7 ms per distinct word",
+        "options": {
+          "queryReplacement": "={{ [ $json.chatInput, $json.sessionId ] }}"
+        }
+      },
+      "id": "b53adfde-73f0-51ec-b4e2-4750b0d0796d",
+      "name": "Library vocabulary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        60,
+        840
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – read-only (agent)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Put each screenshot under the step it illustrates (2026-10-24). The model tends to collect screenshots under the LAST\n// step (measured: 61% under the right step). The source passage says where each belongs: the text just BEFORE the\n// image in the original document. That text is matched to the answer's steps (shared words); the image moves under\n// the best-matching step, next to its best-matching line. Low confidence or no source: the image stays where it is.\n// Any error, or a different image count afterwards: the answer is returned unchanged.\n// Also a safety net (2026-10-24): a source user guide contains a real login in plain text, so anything shaped like\n// \"password: …\" (or \"pwd = …\") is hidden in every answer. The real fix is in the source document.\n// key (password/passcode/pwd/pw), optional \"(case-sensitive)\", a separator (: = - is | ：), then a value that LOOKS like a\n// credential: 6+ characters, no spaces, with a digit or a symbol. Prose (\"is required.\", \"is case-sensitive.\") stays.\nconst SECRET = /\\b(pass ?words?|passcodes?|pwd)\\b(\\s*\\([^)\\n]{0,30}\\))?(\\*{0,2}\\s*(?:[:：=–-]|\\bis\\b:?|\\|)\\s*\\*{0,2}\\s*)([^\\s*|<>()]+)/gi;\nconst SECRET_PW = /\\b(pw)\\b()(\\*{0,2}\\s*[:：=]\\s*\\*{0,2}\\s*)([^\\s*|<>()]+)/gi;   // \"PW\" only with : or = (\"PW-SOP-012\" is a Public Works id)\nconst looksSecret = (v) => { const x = v.replace(/[.,;:!?)\\]]+$/, '');\n  return x.length >= 6 && /[0-9@#$%^&*!?~+=]/.test(x) && !/^[\\d+.,%-]+$/.test(x) && x !== '[removed]'; };\nconst hide = (m, k, par, sep, v) => looksSecret(v) ? `${k}${par ?? ''}${sep}[removed]` : m;\nconst redact = (t) => t.replace(SECRET, hide).replace(SECRET_PW, hide);\nconst original = redact(String($json.output ?? ''));\nconst tools = Array.isArray($json.intermediateSteps) ? $json.intermediateSteps : [];\nconst pass = (o) => [{ json: { ...$json, output: o } }];\ntry {\n  const IMG = /!\\[[^\\]]*\\]\\((https?:\\/\\/[^)\\s]+)\\)/g;\n  const IMG1 = /!\\[[^\\]]*\\]\\((https?:\\/\\/[^)\\s]+)\\)/;\n  const STEP = /^\\s{0,3}\\d+[.)]\\s/;                                      // numbered list items (not numbered headings)\n  const STOP = new Set('the a an and or of to in on for with by is are be this that from at as it you your click select enter then if into will can'.split(' '));\n  const words = (t) => new Set(String(t).replace(IMG, ' ').replace(/\\*?Image, page \\d+:[^\\n]*/gi, ' ').toLowerCase()\n    .match(/[a-z0-9]+/g)?.filter(w => w.length > 2 && !STOP.has(w)) ?? []);\n  const overlap = (a, b) => { let n = 0; for (const w of a) if (b.has(w)) n++; return n / (Math.sqrt(b.size) + 1); };\n  // the passages' own text: parse the tool results and collect their strings (raw text as a fallback)\n  const texts = [];\n  const collect = (v) => { if (typeof v === 'string') texts.push(v); else if (v && typeof v === 'object') for (const x of Object.values(v)) collect(x); };\n  for (const s of tools.filter(s => ['search_documents', 'get_full_document'].includes(s.action?.tool))) {\n    let o = s.observation;\n    if (typeof o === 'string') { try { o = JSON.parse(o); } catch (e) {} }\n    collect(o);\n  }\n  const contextOf = (url) => {\n    for (const o of texts) {\n      const i = o.indexOf(url);\n      if (i < 0) continue;\n      // the document's own text before the image: generated captions (italic lines, \"Image, page N: …\") removed —\n      // a neighbouring screenshot's caption pulled images to the wrong step (manual check, 2026-10-24)\n      const before = o.slice(0, o.lastIndexOf('![', i)).replace(/\\*?Image, page \\d+:[^\\n]*/gi, ' ')\n        .split('\\n').filter(l => !/^\\s*\\*[^*\\n].*\\*\\s*$/.test(l)).join('\\n');\n      // since the END of the previous image (full pattern: alt texts can contain \")\"): exactly what this one illustrates\n      const ends = [...before.matchAll(IMG)].map(m => m.index + m[0].length);\n      const own = (ends.length ? before.slice(ends[ends.length - 1]) : before).replace(IMG, ' ');\n      // even a short sentence (\"3. Go to Groups.\") is the right signal; wider text only if it has no real words\n      const near = words(own).size ? own.slice(-220) : before.replace(IMG, ' ').slice(-220);\n      return { wide: words(before.replace(IMG, ' ').slice(-500)), near: words(near), last: words(near.slice(-120)) };\n    }\n    return null;\n  };\n  const lines = original.split('\\n');\n  const isImgLine = (l) => l.replace(IMG, '').trim() === '' && IMG1.test(l);\n  // protected lines are never steps, targets or moved: code fences (and everything inside) and table rows\n  const prot = new Array(lines.length).fill(false);\n  for (let i = 0, fence = false; i < lines.length; i++) {\n    if (/^\\s*(```|~~~)/.test(lines[i])) { prot[i] = true; fence = !fence; continue; }\n    if (fence || /^\\s*\\|/.test(lines[i])) prot[i] = true;\n  }\n  const steps = lines.map((l, i) => !prot[i] && STEP.test(l) && !isImgLine(l) ? i : -1).filter(i => i >= 0);\n  if (steps.length < 2) return pass(original);\n  // end of the steps region: the first heading, or unindented non-list paragraph, after the last step\n  let end = lines.length;\n  for (let i = steps[steps.length - 1] + 1; i < lines.length; i++) {\n    const l = lines[i];\n    if (!l.trim() || isImgLine(l) || /^\\s+\\S/.test(l) || /^\\s*[-*]\\s/.test(l)) continue;\n    end = i; break;\n  }\n  const blockOf = (i) => { let k = -1; for (let j = 0; j < steps.length; j++) if (steps[j] < i) k = j; return k; };\n  // a target line must keep the image inside the list: a list item, or an indented continuation line\n  const targetOk = (i) => !prot[i] && (/^\\s*(?:\\d+[.)]|[-*+])\\s/.test(lines[i]) || /^\\s+\\S/.test(lines[i]));\n  const blockLines = (k) => { const a = steps[k], b = k + 1 < steps.length ? steps[k + 1] : end;\n    const r = []; for (let i = a; i < b; i++) if (lines[i].trim() && !isImgLine(lines[i]) && targetOk(i)) r.push(i); return r; };\n  const blocks = steps.map((_, k) => { const ls = blockLines(k); return { ls, w: words(ls.map(i => lines[i]).join('\\n')) }; });\n  // trailing images (after the steps, e.g. above the Source line) move too, but only on a clearer match\n  let tail = lines.length;\n  for (let i = end; i < lines.length; i++) if (/^\\s*(?:#{1,4}\\s|\\(?\\*{0,2}_?\\(?source)/i.test(lines[i])) { tail = i; break; }\n  const moves = [];   // [from line, to line]\n  for (let i = steps[0] + 1; i < tail; i++) {\n    if (!isImgLine(lines[i]) || prot[i]) continue;\n    const trailing = i >= end;\n    const url = lines[i].match(IMG1)[1];\n    const c = contextOf(url);\n    if (!c || !c.wide.size) continue;\n    const ctx = c.wide;\n    const scores = blocks.map(b => 2 * overlap(c.near, b.w) + overlap(ctx, b.w));   // the sentence before the image counts double\n    const best = scores.indexOf(Math.max(...scores));\n    const here = blockOf(i);\n    // inertia: an image already under a step that matches nearly as well stays put\n    if (scores[best] < (trailing ? 2.0 : 1.2) || (!trailing && (best === here || (here >= 0 && scores[here] >= 0.75 * scores[best])))) continue;\n    // within the step: the line that best matches the sentence right before the image (wider text breaks ties)\n    const lineScore = (j) => { const lw = words(lines[j]); return overlap(c.last, lw) * 10 + overlap(c.near, lw) * 3 + overlap(ctx, lw); };\n    let target = blocks[best].ls.reduce((m, j) => lineScore(j) > lineScore(m) ? j : m, blocks[best].ls[0]);\n    const indentFrom = target;\n    // never split a paragraph: go to its last line (lazy continuation lines belong to the same list item)\n    while (target + 1 < lines.length && lines[target + 1].trim() && !prot[target + 1] && !isImgLine(lines[target + 1])\n           && !/^\\s*(?:\\d+[.)]|[-*+])\\s/.test(lines[target + 1])) target++;\n    moves.push([i, target, indentFrom]);\n  }\n  if (!moves.length) return pass(original);\n  const moving = new Set(moves.map(m => m[0]));\n  const after = new Map();\n  for (const [from, to, indentFrom] of moves) {\n    const t = lines[indentFrom];\n    const indent = (t.match(/^(\\s*)(?:\\d+[.)]|[-*])\\s+/) ?? [null, t.match(/^\\s*/)[0]]);\n    const pad = indent[0] ? ' '.repeat(indent[0].length) : indent[1];\n    (after.get(to) ?? after.set(to, []).get(to)).push(pad + lines[from].trim());\n  }\n  const outLines = [];\n  for (let i = 0; i < lines.length; i++) {\n    if (moving.has(i)) {                     // drop the image and one blank line left behind\n      if (outLines.length && !outLines[outLines.length - 1].trim() && (i + 1 >= lines.length || !lines[i + 1].trim())) outLines.pop();\n      continue;\n    }\n    outLines.push(lines[i]);\n    if (after.has(i)) for (const img of after.get(i)) outLines.push('', img);\n    if (after.has(i) && i + 1 < lines.length && lines[i + 1].trim()) outLines.push('');\n  }\n  const fixed = outLines.join('\\n').replace(/\\n{3,}/g, '\\n\\n');\n  const count = (t) => (t.match(IMG) ?? []).length;\n  return pass(count(fixed) === count(original) ? fixed : original);\n} catch (e) {\n  return pass(original);\n}"
+      },
+      "id": "aa88a8d0-3e6b-5e51-bcd2-516df60a59fa",
+      "name": "Place screenshots",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        277
+      ]
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Library vocabulary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure AI Foundry Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Azure OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "search_documents_A",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_full_document": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "query_spreadsheets": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_documents": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open WebUI webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize webhook input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize webhook input": {
+      "main": [
+        [
+          {
+            "node": "Log usage (no text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log usage (no text)": {
+      "main": [
+        [
+          {
+            "node": "Library vocabulary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_web": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_open_web": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build routing request": {
+      "main": [
+        [
+          {
+            "node": "Route question (classifier)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route question (classifier)": {
+      "main": [
+        [
+          {
+            "node": "Add routing note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add routing note": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Place screenshots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_pages": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "look_at_pages": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Library vocabulary": {
+      "main": [
+        [
+          {
+            "node": "Build routing request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build routing request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Place screenshots": {
+      "main": [
+        [
+          {
+            "node": "Append web sections",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "errorWorkflow": "ragErrorReport01"
+  },
+  "active": false
+}

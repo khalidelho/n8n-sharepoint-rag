@@ -1,0 +1,374 @@
+{
+  "id": "ragErrorReport01",
+  "name": "RAG – Error reporter",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "63b7a2ec-7bf7-520b-add0-ed58daed9bdd",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rag-incident",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "responseData": "firstEntryJson",
+        "options": {}
+      },
+      "id": "5c8b1fb4-460a-5c6b-abd6-827f7ab940eb",
+      "name": "Incident webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "RAG webhook token"
+        }
+      },
+      "webhookId": "e2a94002-685d-595b-8e42-36765f34282f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// One incident shape for both ways in (design part 1):\n//  - Error Trigger: n8n hands over a failed execution of any workflow whose settings.errorWorkflow is this one:\n//    {execution: {id, url, lastNodeExecuted, mode, error: {message, name}}, workflow: {id, name}}\n//    -> source error_workflow, kind = the error class, ref = the execution id (the number the user's error line shows).\n//  - Incident webhook (POST /webhook/rag-incident, bearer token): the pipe, backups, evals, the watchdog and the\n//    in-workflow error branches send {source, kind, message, ref?, workflow?, workflow_id?, node?, execution_id?, data?}.\n//    source eval + kind run carries the run in data (-> eval_run); kind ok is recorded, never alerted.\n// Text hygiene: an incident never carries the question. Azure and Postgres errors can quote the request body, so the\n// message is cut at the first chatInput, messages or content (any letter case), then capped at 300 characters. The\n// workflow and node names get the same cut: they reach the alert header. Request headers (the token) and error\n// stacks/descriptions are never read; data is capped at 4,000 characters.\nconst CUT_AT = ['chatInput', 'messages', 'content'];\nconst CUT_RE = new RegExp(CUT_AT.join('|'), 'i');   // case-insensitive match: indices stay those of the original text\nconst cut = (v) => {\n  if (v === undefined || v === null || v === '') return null;\n  const t = String(v), i = t.search(CUT_RE);\n  return (i >= 0 ? t.slice(0, i) : t).replace(/\\s+/g, ' ').replace(/[\\s{\\[(\"',:=]+$/, '').trim();\n};\nconst scrub = (v) => { const t = cut(v); return t === null ? null : (t.slice(0, 300) || '(error text withheld: it quoted the request)'); };\nconst scrubName = (v) => { const t = cut(v); return t === null ? null : (t.slice(0, 120) || '(withheld)'); };\nconst DATA_MAX = 4000;\nconst capData = (d) => {\n  if (d === null) return null;\n  const s = JSON.stringify(d);\n  if (s.length <= DATA_MAX) return d;\n  const out = { truncated: true, chars: s.length, ...(d.workflow_id ? { workflow_id: String(d.workflow_id).slice(0, 40) } : {}), preview: '' };\n  for (let n = DATA_MAX; n > 0; n = Math.floor(n * 0.8)) { out.preview = s.slice(0, n); if (JSON.stringify(out).length <= DATA_MAX) return out; }\n  delete out.preview;\n  return out;\n};\nconst clip = (v, n) => { const t = v === undefined || v === null ? '' : String(v).replace(/\\s+/g, ' ').trim().slice(0, n); return t || null; };\nconst isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\n\nconst normalize = (x) => {\n  if (isObj(x.execution) || isObj(x.trigger)) {\n    const e = (isObj(x.execution) ? x.execution : x.trigger).error ?? {};\n    const cls = e.name || (String(e.stack ?? '').match(/^\\s*([A-Za-z]*Error)\\b/) ?? [])[1] || 'error';\n    const id = clip(x.execution?.id, 40);\n    const wid = clip(x.workflow?.id, 40);\n    return { source: 'error_workflow', kind: clip(cls, 60), workflow: scrubName(x.workflow?.name), workflow_id: wid,\n             node: scrubName(x.execution?.lastNodeExecuted ?? e.node?.name), message: scrub(e.message) ?? '(no error message)',\n             execution_id: id, ref: id,\n             data: capData({ workflow_id: wid, mode: clip(x.execution?.mode ?? x.trigger?.mode, 20), retry_of: clip(x.execution?.retryOf, 40) }) };\n  }\n  const b = isObj(x.body) ? x.body : {};\n  const wid = clip(b.workflow_id ?? (isObj(b.data) ? b.data.workflow_id : null), 40);\n  const data = isObj(b.data) ? { ...b.data } : (b.data === undefined || b.data === null ? {} : { value: b.data });\n  if (wid) data.workflow_id = wid;\n  const exec = clip(b.execution_id, 40);\n  return { source: clip(b.source, 40) ?? 'unknown', kind: clip(b.kind, 60) ?? 'unknown', workflow: scrubName(b.workflow),\n           workflow_id: wid, node: scrubName(b.node), message: scrub(b.message), execution_id: exec, ref: clip(b.ref, 40) ?? exec,\n           data: capData(Object.keys(data).length ? data : null) };\n};\nreturn $input.all().map((item) => ({ json: normalize(item.json) }));"
+      },
+      "id": "bdde3105-f17c-50f9-9004-6f092a71887a",
+      "name": "Normalize incident",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e1",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "eval",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "e2",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "run",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dfe47ad0-e591-5e6d-a404-56e457d22333",
+      "name": "Eval run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- A scheduled eval run (evals/scheduled.py posts {source: 'eval', kind: 'run', data: run}).\ninsert into eval_run (set_name, passed, total, failed_ids, seconds, results_path)\nselect d->>'set_name', (d->>'passed')::int, (d->>'total')::int,\n       array(select jsonb_array_elements_text(case when jsonb_typeof(d->'failed_ids') = 'array' then d->'failed_ids' else '[]'::jsonb end)),\n       (d->>'seconds')::numeric, d->>'results_path'\nfrom (select $1::jsonb as d) r\nreturning id, at, set_name, passed, total",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.data ?? {}) ] }}"
+        }
+      },
+      "id": "1eccce44-234c-5b94-8c75-77af67a47969",
+      "name": "Record eval run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        720,
+        -60
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- One row per incident; the throttle state is this table (design part 1): at most one Telegram message per\n-- (source, workflow, node, kind) per 30 minutes.\n-- 1) Same-key incidents take turns. Without this, simultaneous error runs (2 workers x 10 executions) all see \"nothing\n--    alerted yet\" and all alert. n8n's Postgres node (\"single\" batching) sends both statements as ONE query, which\n--    Postgres runs as one transaction, so the lock holds until it commits. This statement returns no row (n8n would\n--    output it as an item).\nselect 1 where pg_advisory_xact_lock(hashtext(concat_ws('|', $1::text, nullif($2, ''), nullif($3, ''), $4::text)))::text = 'locked';\n-- 2) The row is its own claim: notified_at = now() when no row of the key was alerted in the last 30 minutes (never for\n--    kind ok); \"Release claim\" clears it again if the Telegram send fails. This statement starts after the lock, so it\n--    sees a claim the previous holder committed. suppressed = rows of the key in the window that were not alerted (the\n--    \"+N more\"); like the claim check, it reads the table as it was before this insert.\nwith ins as (\n  insert into incident_log (source, workflow, node, kind, message, execution_id, ref, data, notified_at)\n  select $1, nullif($2, ''), nullif($3, ''), $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, 'null')::jsonb,\n         case when $4::text is distinct from 'ok' and not exists (\n                select 1 from incident_log l\n                 where l.source = $1 and l.workflow is not distinct from nullif($2, '') and l.node is not distinct from nullif($3, '')\n                   and l.kind is not distinct from $4::text and l.notified_at > now() - interval '30 minutes')\n              then now() end\n  returning *\n)\nselect ins.id, ins.at, ins.source, ins.workflow, ins.node, ins.kind, ins.message, ins.execution_id, ins.ref,\n       ins.data->>'workflow_id' as workflow_id, ins.notified_at is not null as claimed,\n       (select count(*) from incident_log l\n         where l.source = ins.source and l.workflow is not distinct from ins.workflow\n           and l.node is not distinct from ins.node and l.kind is not distinct from ins.kind\n           and l.at > now() - interval '30 minutes' and l.notified_at is null) as suppressed\nfrom ins",
+        "options": {
+          "queryReplacement": "={{ [ $json.source, $json.workflow, $json.node, $json.kind, $json.message, $json.execution_id, $json.ref, JSON.stringify($json.data ?? null) ] }}"
+        }
+      },
+      "id": "7616bf5f-bb04-5bd9-a68d-e04eac2321c0",
+      "name": "Record incident",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        720,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "n1",
+              "leftValue": "={{ $json.claimed === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4a466906-ea1a-596e-b505-f8f7d6a24dd1",
+      "name": "Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// The Telegram alert (design part 1): what failed and when, the scrubbed message, ref + editor link, \"+N more\", and\n// the runbook section. Never question text; every value is HTML-escaped (Telegram parse_mode HTML).\nconst EDITOR_URL = \"http://localhost:5680/\";\nconst CHAT_AGENTS = [\"zWAl3yeuiJPsldXV\", \"ragChatVision001\", \"ragChatVisionT01\"];\nconst INGESTION = \"GwkCOkOcb9EAOX9e\";\nconst SECTION = {\n  chat: 'Runbook: Chat agent errors', ingestion: 'Runbook: Ingestion errors', other: 'Runbook: Workflow errors',\n  watch: 'Runbook: Service down', backup: 'Runbook: Backup failed', eval: 'Runbook: Eval drop',\n};\nconst BY_SOURCE = { chat_agent: SECTION.chat, look_at_pages: SECTION.chat, pipe: SECTION.chat,\n                    watch: SECTION.watch, backup: SECTION.backup, eval: SECTION.eval };\nconst LABEL = { pipe: 'Open WebUI pipe', backup: 'Backup', eval: 'Evals', watch: 'Watch', chat_agent: 'Chat agent', look_at_pages: 'Look at pages' };\nconst runbook = (r) => r.source === 'error_workflow'\n  ? (CHAT_AGENTS.includes(r.workflow_id) ? SECTION.chat : r.workflow_id === INGESTION ? SECTION.ingestion : SECTION.other)\n  : (BY_SOURCE[r.source] ?? SECTION.other);\nconst esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst stamp = (at) => {\n  let d = new Date(at ?? Date.now());\n  if (isNaN(d)) d = new Date();\n  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short', month: 'short',\n    day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d).map((x) => [x.type, x.value]));\n  return `${p.weekday} ${p.month} ${p.day} ${p.hour}:${p.minute} PT`;\n};\nconst alert = (r) => {\n  const label = r.workflow ? String(r.workflow).replace(/^RAG\\s*[–-]\\s*/, '') : (LABEL[r.source] ?? r.source);\n  const head = ['🔴 <b>RAG incident</b>', esc(label), r.node ? `node \"${esc(r.node)}\"` : null,\n                r.source === 'error_workflow' ? null : esc(r.kind), stamp(r.at)].filter(Boolean).join(' · ');\n  const link = r.execution_id && r.workflow_id\n    ? `${EDITOR_URL}workflow/${encodeURIComponent(r.workflow_id)}/executions/${encodeURIComponent(r.execution_id)}` : null;\n  const ref = [r.ref ? `ref ${esc(r.ref)}` : null, link ? esc(link) : null].filter(Boolean).join(' · ');\n  const more = Number(r.suppressed) > 0 ? `(+${Number(r.suppressed)} more in the last 30 min)` : null;\n  const lines = [head, esc(r.message || '(no message)'), [ref, more].filter(Boolean).join('  '), runbook(r)];\n  return { id: r.id, text: lines.filter(Boolean).join('\\n') };\n};\nreturn $input.all().map((item) => ({ json: alert(item.json) }));"
+      },
+      "id": "4b1a3d3f-743a-51a3-863b-d59c6a7cab69",
+      "name": "Write alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "__TELEGRAM_CHAT_ID__",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "854a6053-4759-5316-b291-342ac76cecea",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        60
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram – health bot"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- The Telegram send failed: give the claim back, so the next incident of this key alerts instead of being counted.\nupdate incident_log set notified_at = null where id = $1 returning id, notified_at",
+        "options": {
+          "queryReplacement": "={{ [ ($('Write alert').all()[$itemIndex] ?? $('Write alert').first()).json.id ] }}"
+        }
+      },
+      "id": "c0601b58-b22f-57d3-8949-312593c9c3bf",
+      "name": "Release claim",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1680,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Supabase DB – RAG"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "c12bdd21-882b-5de7-8cad-5336d019bdd2",
+      "name": "No alert",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Error reporter (incidents -> Telegram)\n**Error Trigger:** every RAG workflow sets *Error workflow* to this one, so each failed execution lands here. **Incident webhook** `POST /webhook/rag-incident` (same bearer token as /rag-chat): the pipe, backups, evals, the watchdog and in-workflow error branches post `{source, kind, message, ref?, workflow?, workflow_id?, node?, execution_id?, data?}`.\nOne `incident_log` row each (Supabase). **Throttle:** at most one Telegram message per (source, workflow, node, kind) per 30 min: the first row of a key claims the alert (under a per-key lock), later ones are counted (\"+N more\"); a failed send releases the claim. Kind `ok` is recorded, never sent. Eval runs go to `eval_run`.\n**Text hygiene:** message, workflow and node are cut at `chatInput` / `messages` / `content` (any case), the message capped at 300 characters, data at 4,000: no question text ever reaches Telegram. If this workflow fails itself, n8n runs it once as its own error workflow (no loop).",
+        "height": 360,
+        "width": 900,
+        "color": 7
+      },
+      "id": "2405b0fb-6216-587e-90b0-948ce12d33f6",
+      "name": "Error reporter",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize incident": {
+      "main": [
+        [
+          {
+            "node": "Eval run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Incident webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Eval run?": {
+      "main": [
+        [
+          {
+            "node": "Record eval run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record incident": {
+      "main": [
+        [
+          {
+            "node": "Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify?": {
+      "main": [
+        [
+          {
+            "node": "Write alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write alert": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to Telegram": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Release claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all"
+  },
+  "active": false
+}

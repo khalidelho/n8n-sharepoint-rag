@@ -95,6 +95,125 @@ tutorials and only show up with real documents.
 - **n8n's Code-node sandbox has no `URL` class.** `new URL()` threw inside a try/catch, so every host looked
   unverified and the bug was silent. Parse hosts with a pattern, and test the classification on real output.
 
+## Drawings, scans and charts
+
+- **Build the test set before the feature.** A retrieval test written from extracted *text* can't show what a text
+  pipeline misses. Fifteen questions on drawings, scans and charts, each answer checked on the actual page, put the
+  text-only agent at 13%; visual page search took it to 83% with strict grading.
+- **Measure charts, don't eyeball them.** My own eyeball reading of a rainfall-intensity chart was 10% off. Detecting
+  the grid lines and tracing the curve matched the source's own worked example within 0.05. Grade a chart answer by
+  whether its stated range *contains* the true value, not by its midpoint — the lenient grade first reported 90%.
+- **OCR quietly corrupts small text on large sheets.** A table on a 34×22 in drawing came back as `304.0 | 253.0` for
+  `3.0-4.0 | 2.0-3.0`, and the agent stated it as fact. CAD-exported PDFs carry an exact text layer: use the PDF's own
+  text when it has one, OCR only image pages.
+- **One question can exhaust the rate limit.** When the text doesn't hold the answer, the agent keeps searching, and
+  every step re-sends everything before it: prompt tokens grew from 2.6k to 72k within one question (275k tokens in
+  45 s against a 200k-per-minute deployment). Pace test runs, cap what a search returns, and give the agent a tool
+  that answers in one look.
+- **Check region availability with the CLI, not a report.** A research report inferred a US-only option for Azure's
+  multimodal embedders from billing meters; `az … list-models` showed every one is Global Standard only. So page images
+  are embedded locally on the Mac's GPU, and only the reading goes to Azure.
+- **Tile large sheets.** Every image embedder squeezes a 34×22 in sheet to about 50 dpi. Index each sheet whole, as 12
+  overlapping tiles and as a title-block crop.
+- **Tesseract's orientation check gives up on charts** (confidence 0.1 on a sideways chart). Read the page in all four
+  orientations, keep the one with the most confident real words, and rotate only on a clear win: some chart books print
+  sideways charts on upright pages. Run the check on real scans only — on converted slides it doubled indexing time.
+- **The GPU allocator can kill a long run silently.** The first embedding run died at view ~1,600: PyTorch's MPS
+  allocator caches a buffer per image size. Clear the cache per batch, and checkpoint so a crash loses nothing.
+- **Duplicates outrank the original.** Seven copies of one training deck each reproduced the same figure and outranked
+  the real one. If the question names a document, also search inside it; show duplicate pages once; rank a figure page
+  (one figure number, little text) above pages that cite many figures.
+- **Don't pick tiles by similarity.** "The end of the profile" isn't something an image embedding knows. Send the vision
+  model the whole sheet plus all 12 tiles, and let only its short answer go back to the agent.
+- **A bigger model of the same kind didn't read the chart better.** A fair A/B — the page-reading step replayed outside
+  n8n with the same pages and prompts, 15 tries per model — gave the full model and the mini model 0–1 of 15 each. The
+  answers showed why: the full model never once saw the lowest curve's tiny "1" label and counted seven curves instead
+  of eight, consistently and confidently. A perception limit, not a reasoning one. Read the answers, not just the
+  scores. A newer model generation, gpt-6.1-sol, then read both chart questions right 10/10 in the same A/B.
+- **Reasoning models need room to answer.** At the production output budget the full model spent everything on
+  thinking and returned nothing, and the mini model did the same in 5 of 30 tries — where the workflow quietly fell
+  back to its first-look draft. Doubling the budget and labelling a cut-off read "approximate" (with an incident)
+  turned a silent wrong answer into a visible one.
+
+## Citations and pages
+
+- **Keep the page on every chunk.** None of 1,388 passages had a page number, because OCR output was chunked without
+  page boundaries. The page index already holds each page's own text, so passages are matched to pages without
+  re-running OCR: 98.5% land on the right pages.
+- **Score in the right direction.** "How much of the passage does this page cover" let one text-heavy agenda slide win
+  every passage of its deck (33% right). "How much of the page is in the passage" fixed it: passages are contiguous
+  runs of pages. Grow the range outward from the best page instead of taking every matching page (26-page ranges).
+- **Examples in a prompt beat the instructions next to them.** The new rule said "cite pages", but the prompt's
+  citation example had none, and the model copied the example. Fixing the example fixed the answers.
+
+## Reading what people type
+
+- **Split the job by what each part can know.** A request said "Fall stabilisation … creeks that feed the river" and meant *outfall*; the agent wrote about the season. The model can't know the library's vocabulary and the
+  database can't read the sentence, so a lookup lists library terms that look like words in the message, the router
+  judges them in context, and the user is told in one line whenever the system reinterprets a word.
+- **"Much more common in the library" isn't enough.** "fall" appeared in 30 files and "outfall" in 53. List clipped-word
+  candidates generously and let the sentence decide.
+- **Trigram similarity is blind to swapped letters in short words** (an acronym with two letters swapped scored 0.2
+  against the real one). Use edit distance plus a swapped-letters check — which also needs a small edit distance,
+  because the typo happened to be an anagram of an ordinary word.
+- **Test the words that must not change.** Negative controls ("fall protection", "fall seeding", "write a scope of
+  work…") stayed untouched; an initials guard drops acronym "corrections" that are really expansions; identifiers are
+  never touched.
+- **Keep the router's input byte-identical.** Adding a "Message:" prefix shifted the routing of one demo question; a
+  36-question old-vs-new routing comparison caught it.
+- **n8n error items carry no link back.** An error-output item has no `pairedItem`, so the fallback crashed when the
+  lookup failed. Read upstream nodes by position (`.all()[$itemIndex]`), not `.item` — and force the error path once.
+
+## Polishing answers
+
+- **A local reranker beat GPT and freed the quota.** Reranking 25 passages with GPT sent ~19k tokens per search, the
+  biggest single use of the Azure quota. bge-reranker-v2-m3 on llama.cpp put the right file in the top four 84% of the
+  time against 78% (first place 66% vs 72%), 0.7 s faster, with no Azure tokens. Its scores separate off-topic
+  questions cleanly, so passages below a threshold are dropped, and GPT decides when nothing passes — which keeps the
+  honest "not in the library" answers.
+- **A self-graded fix can only agree with itself.** Moving screenshots under their steps scored well on an automated
+  check that used the same matching as the fixer. A hand sample found 3 of 14 moves wrong: a neighbouring image's
+  machine-written caption had polluted the context. Match only the document's own text since the previous image.
+- **Source documents can hold secrets.** A user guide in the library contained a real login in plain text. Answers now
+  hide credential-shaped values (30 test cases, including "the password is case-sensitive"), but the real fix is to
+  change that password and replace the document: the text still sits in the index and in chat history.
+- **An export button is a server-side fetcher.** "Download as Word" fetched every image in the message, so an edited
+  message could make the server fetch any address. Fetch only the library's own image store, and remove every other
+  image from pandoc's document tree (pandoc's own sandbox mode was broken in the shipped version).
+
+## A system that checks itself
+
+- **Every failure becomes a message; every user gets a ref.** Before this, a failed answer showed a raw "couldn't be
+  reached (HTTPError)" and told nobody. Now each failure is one incident row and one throttled Telegram alert, and the
+  user sees a plain line with the same reference number.
+- **Fixed thresholds on small eval sets roll back changes for noise.** A go-live was rolled back on a 12-question set
+  whose two misses passed on a rerun, with byte-identical prompt, model and tools. The fair test is a *paired, same-day
+  baseline*: run old and new on the same questions the same day, and let the new one fail only items the old one also
+  failed, unless it passes one rerun. It cuts both ways: on the second attempt the old version passed a question twice
+  and the new one failed it twice — not noise to explain away, but with n = 2 not proof either.
+- **Put the floor below the baseline.** A weekly floor equal to the measured baseline pages on a normal week. Use
+  baseline − 1, and ask each miss once more before checking it.
+- **`n8n export:workflow` saves the editor draft, not what runs.** Backups taken that way held exactly the code being
+  rolled back, and a helper script once exported an unpublished day-old draft. Read the published version from
+  `workflow_history` at the active version id (this repo's export does), and accept a backup as a rollback source only
+  when its version id equals the active one.
+- **Rollbacks by version id expire.** This n8n edition prunes non-current workflow versions after about a day, so keep
+  rollback files.
+- **A generated file can switch off the alerts.** A builder script skipped the "error workflow" setting; the live
+  workflow had it, so nothing looked wrong, but the next deploy from that file would have silenced its alerts. Test
+  that every committed workflow carries the setting, and check it with SQL after every deploy.
+- **Shared event logs cause false "crashed" alerts.** In queue mode the workers share a data volume and wrote the same
+  event-log file; after a restart, one worker's crash recovery marked the other's finished runs as crashed. Give each
+  container its own event-log name.
+- **Alerts race.** Two workers handling a burst could each decide "nothing sent in 30 minutes" and send. A per-key
+  advisory lock plus claiming the alert in the same insert: 10 parallel failures → exactly one message.
+- **Graders need the evidence in their window.** An answer was graded "unsupported" because the files it cited sat
+  past the grader's 30,000-character cut. Put passages that mention a cited file first. And respond first, then grade:
+  a grader inside the answer's run eats the user's timeout.
+- **Drill the restore, not just the backup.** A restore into throwaway containers took 10 s and matched every count,
+  but on a bare database printed 56 "role does not exist" errors: Postgres roles aren't in a dump. The runbook now
+  creates them first. Keys and `.env` files stay out of the backup on purpose; they belong in a password manager.
+
 ## Evaluating alternatives
 
 - **"Completed" is not the same as "readable".** One pipeline marked image-only PDFs as completed with zero text
